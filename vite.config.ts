@@ -18,6 +18,12 @@ export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ""), ...process.env };
 
   return {
+    server: {
+      allowedHosts: ["reader.youbeat.cn"],
+    },
+    preview: {
+      allowedHosts: ["reader.youbeat.cn"],
+    },
     plugins: [
       react(),
       {
