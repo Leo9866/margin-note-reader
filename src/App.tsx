@@ -235,8 +235,8 @@ export default function App() {
     [query],
   );
   const canTranslateCurrentDoc = useMemo(
-    () => currentDoc?.sourceType === "url" && isMostlyEnglishMarkdown(markdown),
-    [currentDoc?.sourceType, markdown],
+    () => Boolean(currentDoc && isUrlLikeDocument(currentDoc) && isMostlyEnglishMarkdown(markdown)),
+    [currentDoc, markdown],
   );
   const matchingBlocks = useMemo(() => {
     const value = query.trim().toLowerCase();
@@ -970,6 +970,18 @@ export default function App() {
             {isImmersive ? <CornersIn size={15} /> : <CornersOut size={15} />}
             {isImmersive ? "退出沉浸" : "沉浸阅读"}
           </button>
+          {canTranslateCurrentDoc ? (
+            <button
+              className="topbar-text-button"
+              disabled={translationBusy || isEditingSource}
+              type="button"
+              title="在线翻译当前英文 URL 文档为中文"
+              onClick={() => void translateCurrentUrlDocument()}
+            >
+              <Sparkle size={15} />
+              {translationBusy ? "翻译中..." : "在线翻译"}
+            </button>
+          ) : null}
           <div className="font-controls" title="字号">
             <button type="button" onClick={() => setFontSize((value) => Math.max(MIN_READER_FONT_SIZE, value - 1))}>
               A−
@@ -1018,18 +1030,6 @@ export default function App() {
             <DownloadSimple size={15} />
             下载 HTML
           </button>
-          {canTranslateCurrentDoc ? (
-            <button
-              className="topbar-text-button"
-              disabled={translationBusy || isEditingSource}
-              type="button"
-              title="在线翻译当前英文 URL 文档为中文"
-              onClick={() => void translateCurrentUrlDocument()}
-            >
-              <Sparkle size={15} />
-              {translationBusy ? "翻译中..." : "在线翻译"}
-            </button>
-          ) : null}
         </div>
       </header>
 
@@ -1285,6 +1285,17 @@ export default function App() {
               </div>
               <Brain size={21} weight="duotone" />
             </div>
+            {canTranslateCurrentDoc ? (
+              <button
+                className="rail-translate-button"
+                disabled={translationBusy || isEditingSource}
+                type="button"
+                onClick={() => void translateCurrentUrlDocument()}
+              >
+                <Sparkle size={15} />
+                {translationBusy ? "翻译中..." : "在线翻译全文"}
+              </button>
+            ) : null}
             <div className="ai-actions">
               <button disabled={!selection || aiBusy} type="button" onClick={() => void runAi("explain")}>
                 {aiBusy ? "请求中..." : "解释选区"}
@@ -2305,6 +2316,16 @@ function sourceTypeLabel(sourceType: SourceType) {
   return labels[sourceType];
 }
 
+function isUrlLikeDocument(doc: ReaderDoc) {
+  return (
+    doc.sourceType === "url" ||
+    doc.sourceType === "cloud-doc" ||
+    Boolean(doc.sourceUrl) ||
+    doc.group === "网页资料" ||
+    /^local:\d+-url-/i.test(doc.file)
+  );
+}
+
 function isMostlyEnglishMarkdown(markdown: string) {
   const text = stripMarkdownForLanguageDetection(markdown).slice(0, 20000);
   if (text.length < 80) return false;
@@ -2325,7 +2346,7 @@ function isMostlyEnglishMarkdown(markdown: string) {
 
   const totalLetters = latinLetters + otherLetters + cjkLetters;
   if (latinLetters < 70 || totalLetters < 70) return false;
-  return cjkLetters <= 3 && latinLetters / totalLetters >= 0.88;
+  return cjkLetters / totalLetters <= 0.05 && latinLetters / totalLetters >= 0.75;
 }
 
 function stripMarkdownForLanguageDetection(markdown: string) {
@@ -2363,7 +2384,7 @@ function sanitizeImportedDocs(value: unknown): ImportedDoc[] {
     .map((doc) => ({
       ...doc,
       group: doc.group || "我的文档",
-      sourceType: doc.sourceType ?? "markdown-file",
+      sourceType: doc.sourceType ?? (doc.sourceUrl ? "url" : "markdown-file"),
       updatedAt: doc.updatedAt ?? doc.createdAt,
     }))
     .slice(0, 100);

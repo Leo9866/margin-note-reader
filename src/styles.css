@@ -1350,6 +1350,7 @@ body.is-resizing-rail .rail-resizer::after {
 .action-grid button,
 .primary-button,
 .ai-actions button,
+.rail-translate-button,
 .ask-row button {
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1365,6 +1366,7 @@ body.is-resizing-rail .rail-resizer::after {
 .action-grid button:hover,
 .primary-button:hover,
 .ai-actions button:hover,
+.rail-translate-button:hover,
 .ask-row button:hover {
   border-color: var(--accent);
   background: var(--accent-bg);
@@ -1373,6 +1375,7 @@ body.is-resizing-rail .rail-resizer::after {
 .action-grid button:active,
 .primary-button:active,
 .ai-actions button:active,
+.rail-translate-button:active,
 .ask-row button:active {
   transform: translateY(1px);
 }
@@ -1380,6 +1383,7 @@ body.is-resizing-rail .rail-resizer::after {
 .action-grid button:disabled,
 .primary-button:disabled,
 .ai-actions button:disabled,
+.rail-translate-button:disabled,
 .ask-row button:disabled {
   opacity: 0.42;
 }
@@ -1469,6 +1473,20 @@ body.is-resizing-rail .rail-resizer::after {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  color: var(--bg-content);
+  background: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.rail-translate-button {
+  display: inline-flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 13px;
   color: var(--bg-content);
   background: var(--accent);
   font-size: 13px;
