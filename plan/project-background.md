@@ -90,8 +90,14 @@ The current standalone project already includes:
 - local notebook panel
 - localStorage persistence
 - Markdown note export
-- prototype AI margin flow with local simulated responses
+- workspace home for blank documents, file import, folder import, HTML import, and sample documents
+- IndexedDB-backed local document library for user-created and imported documents
+- source Markdown editing and saving for user documents
+- local Markdown, plain text, folder, and HTML import
+- real AI margin flow through an OpenAI-compatible Responses API boundary
+- streaming AI answers that can be saved into notes
+- typed annotations for important passages, questions, definitions, citations, and revisit items
+- click-to-source navigation from saved notebook items
 - light and dark theme switch
 
-The current AI behavior is intentionally local and simulated. It validates the interaction model before introducing model APIs, streaming, citation handling, prompt design, and error states.
-
+The current AI behavior is no longer a local simulation. It validates the real interaction model while still keeping product boundaries clear: document text is sent only when the user triggers an AI action, and local reading notes remain browser-local by default. The next AI work should focus on source references, prompt templates, retry flows, and stronger answer actions.

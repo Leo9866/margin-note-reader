@@ -84,7 +84,7 @@ async function handleAiRequest(request: any, response: any, env: Record<string, 
     await streamAiResponse(upstream, response, model);
   } catch (error) {
     sendJson(response, 500, {
-      error: error instanceof Error ? error.message : "模型请求失败。",
+      error: getUpstreamErrorMessage(error, env.OPENAI_BASE_URL ?? DEFAULT_OPENAI_BASE_URL),
     });
   }
 }
@@ -96,7 +96,7 @@ function normalizeBaseUrl(value: string) {
 
 function buildInstructions() {
   return [
-    "你是 Margin Note Reader 的中文 AI 阅读边栏，帮助用户学习 Hermes Agent 技术文档。",
+    "你是 Margin Note Reader 的中文 AI 阅读边栏，帮助用户学习长文档、课程材料、技术文档和方案资料。",
     "你的回答必须基于用户给出的当前选区、当前章节和已有笔记，不要编造未提供的源码细节。",
     "回答要短、准、可复习。优先使用中文，保留必要英文术语。不要输出一整段长文本。",
     "不要展示隐藏推理链或逐 token 思考。你可以展示可复核的“思路摘要”，说明你抓住了哪些上下文、如何判断、依据来自哪里。",
@@ -227,6 +227,17 @@ function extractStreamDelta(eventName: string, value: any) {
 
 function extractErrorMessage(result: any) {
   return result?.error?.message || result?.message || null;
+}
+
+function getUpstreamErrorMessage(error: unknown, baseUrl: string) {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (message === "fetch failed" || message === "Failed to fetch") {
+      return `无法连接模型服务：${normalizeBaseUrl(baseUrl)}。请检查网络、OPENAI_BASE_URL 或代理配置。`;
+    }
+    if (message) return message;
+  }
+  return "模型请求失败。";
 }
 
 function readJsonBody(request: any) {

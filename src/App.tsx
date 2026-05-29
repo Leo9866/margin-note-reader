@@ -1,23 +1,31 @@
 import {
-  Article,
   BookmarkSimple,
   Brain,
   CaretRight,
+  Check,
+  CornersIn,
+  CornersOut,
   Export,
+  FilePpt,
   HighlighterCircle,
   MagnifyingGlass,
   Moon,
   NotePencil,
+  PencilSimple,
   Plus,
-  SidebarSimple,
   Sparkle,
   Sun,
-  TextAa,
   Trash,
+  UploadSimple,
+  X,
 } from "@phosphor-icons/react";
+import type PptxGenJS from "pptxgenjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEY = "margin-note-reader.hermes.v1";
+const LIBRARY_DB_NAME = "margin-note-reader.library";
+const LIBRARY_DB_VERSION = 1;
+const LIBRARY_STORE_NAME = "documents";
 const LAYOUT_VERSION = 4;
 const DEFAULT_FONT_SIZE = 20;
 const DEFAULT_MEASURE = 108;
@@ -25,44 +33,74 @@ const MIN_READER_FONT_SIZE = 19;
 const DEFAULT_STUDY_WIDTH = 430;
 const MIN_STUDY_WIDTH = 340;
 const MAX_STUDY_WIDTH = 680;
+const EMPTY_DOC_TEMPLATE = "# 未命名文档\n\n在这里开始记录、阅读或整理资料。\n";
 
-const DOCS: ReaderDoc[] = [
-  { file: "00_ARCHITECTURE_OVERVIEW.md", title: "架构总览", group: "概览" },
-  { file: "PHASE_1_AGENT_CORE.md", title: "阶段一：Agent Core 主循环", group: "八层 Phase 深入" },
-  { file: "PHASE_2_PROVIDER_TRANSPORT.md", title: "阶段二：Provider / Transport", group: "八层 Phase 深入" },
-  { file: "PHASE_3_CONTEXT_STATE.md", title: "阶段三：Context & State ★", group: "八层 Phase 深入" },
-  { file: "PHASE_4_MEMORY_LEARNING.md", title: "阶段四：Memory & Learning ★★★", group: "八层 Phase 深入" },
-  { file: "PHASE_5_CAPABILITY.md", title: "阶段五：Capability 工具系统", group: "八层 Phase 深入" },
-  { file: "PHASE_6_EXECUTION_ENV.md", title: "阶段六：Execution Environment", group: "八层 Phase 深入" },
-  { file: "PHASE_7_INTERFACE.md", title: "阶段七：Interface 接入层", group: "八层 Phase 深入" },
-  { file: "PHASE_8_CROSS_CUTTING.md", title: "阶段八：Cross-cutting 横切能力", group: "八层 Phase 深入" },
-  { file: "BRIEF.md", title: "5 分钟极速版", group: "汇报材料" },
-  { file: "REPORT_EXECUTIVE.md", title: "汇报成稿 30 分钟版", group: "汇报材料" },
-];
+const DOCS: ReaderDoc[] = [];
 
 type BlockType = "heading" | "paragraph" | "list" | "quote" | "code" | "table" | "rule";
-type AnnotationKind = "highlight" | "note" | "bookmark" | "ai" | "term";
+type AnnotationKind =
+  | "highlight"
+  | "note"
+  | "bookmark"
+  | "ai"
+  | "term"
+  | "important"
+  | "question"
+  | "definition"
+  | "citation"
+  | "revisit";
 type AiMode = "explain" | "summarize" | "question" | "term";
+type SourceType = "blank" | "markdown-file" | "folder-file" | "html-file";
 type Theme = "light" | "dark";
+
+const NOTE_KIND_OPTIONS: Array<{ kind: AnnotationKind; label: string }> = [
+  { kind: "note", label: "笔记" },
+  { kind: "important", label: "重要" },
+  { kind: "question", label: "问题" },
+  { kind: "definition", label: "定义" },
+  { kind: "citation", label: "引用" },
+  { kind: "revisit", label: "回看" },
+];
 
 interface ReaderDoc {
   file: string;
   title: string;
   group: string;
+  sourceType: SourceType;
+  originalName?: string;
+  relativePath?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+interface ImportedDoc extends ReaderDoc {
+  createdAt: string;
+  updatedAt: string;
+  markdown: string;
 }
 
 interface DocBlock {
   id: string;
+  aliases?: string[];
   type: BlockType;
   markdown: string;
+  inlineMarkdown?: string;
   text: string;
   headingPath: string[];
   level?: number;
-  items?: string[];
+  items?: ListItem[];
   ordered?: boolean;
   lang?: string;
   rows?: string[][];
   header?: string[];
+}
+
+interface ListItem {
+  markdown: string;
+  text: string;
+  level: number;
+  marker: string;
+  ordered: boolean;
 }
 
 interface TocItem {
@@ -100,7 +138,8 @@ interface AiThread {
 
 interface PersistedState {
   layoutVersion: number;
-  currentDocFile: string;
+  currentDocFile: string | null;
+  importedDocs?: ImportedDoc[];
   annotations: Annotation[];
   aiThreads: AiThread[];
   theme: Theme;
@@ -111,14 +150,21 @@ interface PersistedState {
 
 export default function App() {
   const articleRef = useRef<HTMLElement | null>(null);
-  const [currentDocFile, setCurrentDocFile] = useState(DOCS[0].file);
+  const markdownInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const htmlInputRef = useRef<HTMLInputElement | null>(null);
+  const hasAppliedHashRef = useRef(false);
+  const [currentDocFile, setCurrentDocFile] = useState<string | null>(null);
   const [markdownByFile, setMarkdownByFile] = useState<Record<string, string>>({});
+  const [importedDocs, setImportedDocs] = useState<ImportedDoc[]>([]);
   const [loadError, setLoadError] = useState("");
+  const [importError, setImportError] = useState("");
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [aiThreads, setAiThreads] = useState<AiThread[]>([]);
   const [selection, setSelection] = useState<SelectionState | null>(null);
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [noteKind, setNoteKind] = useState<AnnotationKind>("note");
   const [questionDraft, setQuestionDraft] = useState("");
   const [query, setQuery] = useState("");
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE);
@@ -127,16 +173,37 @@ export default function App() {
   const [studyWidth, setStudyWidth] = useState(DEFAULT_STUDY_WIDTH);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
+  const [pptBusy, setPptBusy] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [flashBlockId, setFlashBlockId] = useState<string | null>(null);
+  const [hasHydrated, setHasHydrated] = useState(false);
+  const [isEditingSource, setIsEditingSource] = useState(false);
+  const [sourceDraft, setSourceDraft] = useState("");
+  const [sourceStatus, setSourceStatus] = useState("");
+  const [isImmersive, setIsImmersive] = useState(false);
 
-  const currentDoc = DOCS.find((doc) => doc.file === currentDocFile) ?? DOCS[0];
-  const markdown = markdownByFile[currentDocFile] ?? "";
+  const allDocs = useMemo<ReaderDoc[]>(() => [...DOCS, ...importedDocs], [importedDocs]);
+  const currentDoc = currentDocFile ? allDocs.find((doc) => doc.file === currentDocFile) ?? null : null;
+  const isEditableDoc = Boolean(currentDoc);
+  const markdown = currentDocFile ? markdownByFile[currentDocFile] ?? "" : "";
   const parsed = useMemo(() => parseMarkdown(markdown), [markdown]);
-  const currentAnnotations = annotations.filter((item) => item.docFile === currentDocFile);
-  const currentThreads = aiThreads.filter((item) => item.docFile === currentDocFile);
+  const blockIdLookup = useMemo(() => {
+    const lookup = new Map<string, string>();
+    for (const block of parsed.blocks) {
+      lookup.set(block.id, block.id);
+      for (const alias of block.aliases ?? []) lookup.set(alias, block.id);
+    }
+    return lookup;
+  }, [parsed.blocks]);
+  const currentAnnotations = currentDocFile
+    ? annotations.filter((item) => item.docFile === currentDocFile)
+    : [];
+  const currentThreads = currentDocFile
+    ? aiThreads.filter((item) => item.docFile === currentDocFile)
+    : [];
   const activeBlock =
-    (selection ? parsed.blocks.find((block) => block.id === selection.blockId) : null) ??
-    parsed.blocks.find((block) => block.id === activeBlockId) ??
+    (selection ? findBlockById(parsed.blocks, selection.blockId, blockIdLookup) : null) ??
+    findBlockById(parsed.blocks, activeBlockId, blockIdLookup) ??
     null;
   const activeSection = useMemo(
     () => getSectionMarkdown(parsed.blocks, activeBlock?.id),
@@ -152,45 +219,74 @@ export default function App() {
     return parsed.blocks.filter((block) => block.text.toLowerCase().includes(value)).length;
   }, [parsed.blocks, query]);
   const selectedAnnotations = selection
-    ? currentAnnotations.filter((item) => item.blockId === selection.blockId)
+    ? currentAnnotations.filter((item) => {
+        const selectedBlock = findBlockById(parsed.blocks, selection.blockId, blockIdLookup);
+        return selectedBlock ? annotationBelongsToBlock(item, selectedBlock) : false;
+      })
     : [];
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const stored = JSON.parse(raw) as Partial<PersistedState>;
-      if (stored.currentDocFile && DOCS.some((doc) => doc.file === stored.currentDocFile)) {
-        setCurrentDocFile(stored.currentDocFile);
+    let cancelled = false;
+
+    async function hydrate() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const stored = raw ? (JSON.parse(raw) as Partial<PersistedState>) : {};
+        const legacyDocs = sanitizeImportedDocs(stored.importedDocs);
+        const libraryDocs = await loadLibraryDocs();
+        const nextImportedDocs = dedupeImportedDocs([...libraryDocs, ...legacyDocs]);
+        if (legacyDocs.length) await saveLibraryDocs(nextImportedDocs);
+        if (cancelled) return;
+
+        setImportedDocs(nextImportedDocs);
+        if (Array.isArray(stored.annotations)) setAnnotations(stored.annotations);
+        if (Array.isArray(stored.aiThreads)) setAiThreads(stored.aiThreads);
+        const hasCurrentLayout = stored.layoutVersion === LAYOUT_VERSION;
+        if ((stored.theme === "dark" || stored.theme === "light") && hasCurrentLayout) {
+          setTheme(stored.theme);
+        }
+        if (typeof stored.fontSize === "number" && hasCurrentLayout) {
+          setFontSize(Math.max(MIN_READER_FONT_SIZE, stored.fontSize));
+        }
+        if (typeof stored.measure === "number" && hasCurrentLayout) {
+          setMeasure(Math.max(DEFAULT_MEASURE, stored.measure));
+        }
+        if (typeof stored.studyWidth === "number" && hasCurrentLayout) {
+          setStudyWidth(clamp(stored.studyWidth, MIN_STUDY_WIDTH, MAX_STUDY_WIDTH));
+        }
+      } catch {
+        localStorage.removeItem(STORAGE_KEY);
+      } finally {
+        if (!cancelled) setHasHydrated(true);
       }
-      if (Array.isArray(stored.annotations)) setAnnotations(stored.annotations);
-      if (Array.isArray(stored.aiThreads)) setAiThreads(stored.aiThreads);
-      const hasCurrentLayout = stored.layoutVersion === LAYOUT_VERSION;
-      if ((stored.theme === "dark" || stored.theme === "light") && hasCurrentLayout) {
-        setTheme(stored.theme);
-      }
-      if (typeof stored.fontSize === "number" && hasCurrentLayout) {
-        setFontSize(Math.max(MIN_READER_FONT_SIZE, stored.fontSize));
-      }
-      if (typeof stored.measure === "number" && hasCurrentLayout) {
-        setMeasure(Math.max(DEFAULT_MEASURE, stored.measure));
-      }
-      if (typeof stored.studyWidth === "number" && hasCurrentLayout) {
-        setStudyWidth(clamp(stored.studyWidth, MIN_STUDY_WIDTH, MAX_STUDY_WIDTH));
-      }
-    } catch {
-      localStorage.removeItem(STORAGE_KEY);
     }
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    const hashDoc = decodeURIComponent(window.location.hash.replace(/^#/, ""));
-    if (hashDoc && DOCS.some((doc) => doc.file === hashDoc)) {
-      setCurrentDocFile(hashDoc);
+    if (!hasHydrated) return;
+
+    const applyHashDoc = () => {
+      const hashDoc = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+      if (hashDoc && allDocs.some((doc) => doc.file === hashDoc)) {
+        setCurrentDocFile(hashDoc);
+      }
+    };
+
+    if (!hasAppliedHashRef.current) {
+      applyHashDoc();
+      hasAppliedHashRef.current = true;
     }
-  }, []);
+    window.addEventListener("hashchange", applyHashDoc);
+    return () => window.removeEventListener("hashchange", applyHashDoc);
+  }, [allDocs, hasHydrated]);
 
   useEffect(() => {
+    if (!hasHydrated) return;
     const data: PersistedState = {
       layoutVersion: LAYOUT_VERSION,
       currentDocFile,
@@ -202,10 +298,33 @@ export default function App() {
       studyWidth,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }, [aiThreads, annotations, currentDocFile, fontSize, measure, studyWidth, theme]);
+  }, [
+    aiThreads,
+    annotations,
+    currentDocFile,
+    fontSize,
+    hasHydrated,
+    importedDocs,
+    measure,
+    studyWidth,
+    theme,
+  ]);
 
   useEffect(() => {
+    if (!currentDocFile) return;
     if (markdownByFile[currentDocFile]) return;
+    const importedDoc = importedDocs.find((doc) => doc.file === currentDocFile);
+    if (importedDoc) {
+      setLoadError("");
+      setMarkdownByFile((current) =>
+        current[currentDocFile] ? current : { ...current, [currentDocFile]: importedDoc.markdown },
+      );
+      return;
+    }
+    if (!DOCS.some((doc) => doc.file === currentDocFile)) {
+      setLoadError(`无法读取文档：${currentDocFile}`);
+      return;
+    }
     let cancelled = false;
     setLoadError("");
     fetch(`/docs/${currentDocFile}`)
@@ -224,15 +343,38 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [currentDocFile, markdownByFile]);
+  }, [currentDocFile, importedDocs, markdownByFile]);
 
   useEffect(() => {
-    window.history.replaceState(null, "", `#${currentDocFile}`);
+    if (!isEditingSource) setSourceDraft(markdown);
+  }, [isEditingSource, markdown]);
+
+  useEffect(() => {
+    if (currentDocFile) {
+      window.history.replaceState(null, "", `#${currentDocFile}`);
+    } else {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
     setSelection(null);
     setActiveBlockId(null);
     setProgress(0);
+    setIsEditingSource(false);
+    setSourceStatus("");
     articleRef.current?.scrollTo({ top: 0 });
   }, [currentDocFile]);
+
+  useEffect(() => {
+    if (!currentDoc) setIsImmersive(false);
+  }, [currentDoc]);
+
+  useEffect(() => {
+    if (!isImmersive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsImmersive(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isImmersive]);
 
   const captureSelection = useCallback(() => {
     const selected = window.getSelection();
@@ -250,7 +392,7 @@ export default function App() {
 
   const addAnnotation = useCallback(
     (kind: AnnotationKind, note = "") => {
-      if (!selection) return;
+      if (!selection || !currentDocFile) return;
       setAnnotations((current) => [
         {
           id: crypto.randomUUID(),
@@ -273,15 +415,21 @@ export default function App() {
   }, []);
 
   const jumpToBlock = useCallback((blockId: string, selectedText?: string) => {
-    const element = document.getElementById(blockId);
+    const resolvedBlockId = blockIdLookup.get(blockId) ?? blockId;
+    const element = document.getElementById(resolvedBlockId);
     if (!element) return;
     element.scrollIntoView({ behavior: "smooth", block: "center" });
-    setActiveBlockId(blockId);
-    if (selectedText) setSelection({ blockId, text: selectedText });
-  }, []);
+    setActiveBlockId(resolvedBlockId);
+    setFlashBlockId(resolvedBlockId);
+    window.setTimeout(() => {
+      setFlashBlockId((current) => (current === resolvedBlockId ? null : current));
+    }, 1600);
+    if (selectedText) setSelection({ blockId: resolvedBlockId, text: selectedText });
+  }, [blockIdLookup]);
 
   const runAi = useCallback(
     async (mode: AiMode) => {
+      if (!currentDoc || !currentDocFile) return;
       if (!selection && mode !== "summarize") return;
       const prompt =
         mode === "question"
@@ -348,7 +496,7 @@ export default function App() {
         );
         setQuestionDraft("");
       } catch (error) {
-        const message = error instanceof Error ? error.message : "AI 请求失败。";
+        const message = getAiErrorMessage(error);
         setAiError(message);
         setAiThreads((current) =>
           current.map((thread) =>
@@ -368,7 +516,7 @@ export default function App() {
     [
       activeBlock,
       activeSection,
-      currentDoc.title,
+      currentDoc,
       currentDocFile,
       parsed.title,
       questionDraft,
@@ -394,11 +542,12 @@ export default function App() {
   }, []);
 
   const exportNotes = useCallback(() => {
+    if (!currentDoc) return;
     const lines = [
       `# ${currentDoc.title} 阅读笔记`,
       "",
       ...currentAnnotations.map((item) => {
-        const block = parsed.blocks.find((candidate) => candidate.id === item.blockId);
+        const block = findBlockById(parsed.blocks, item.blockId, blockIdLookup);
         return [
           `## ${annotationLabel(item.kind)} - ${block?.headingPath.join(" / ") || parsed.title}`,
           "",
@@ -416,7 +565,21 @@ export default function App() {
     a.download = `${slugify(currentDoc.title)}-阅读笔记.md`;
     a.click();
     URL.revokeObjectURL(href);
-  }, [currentAnnotations, currentDoc.title, parsed.blocks, parsed.title]);
+  }, [blockIdLookup, currentAnnotations, currentDoc, parsed.blocks, parsed.title]);
+
+  const exportPresentation = useCallback(async () => {
+    if (!currentDoc || !markdown.trim()) return;
+    setPptBusy(true);
+    try {
+      await exportMarkdownAsPptx({
+        blocks: parsed.blocks,
+        markdown,
+        title: currentDoc.title,
+      });
+    } finally {
+      setPptBusy(false);
+    }
+  }, [currentDoc, markdown, parsed.blocks]);
 
   const onReaderScroll = useCallback(() => {
     const element = articleRef.current;
@@ -435,11 +598,140 @@ export default function App() {
   }, []);
 
   const docsByGroup = useMemo(() => {
-    return DOCS.reduce<Record<string, ReaderDoc[]>>((groups, doc) => {
+    return allDocs.reduce<Record<string, ReaderDoc[]>>((groups, doc) => {
       groups[doc.group] = [...(groups[doc.group] ?? []), doc];
       return groups;
     }, {});
+  }, [allDocs]);
+
+  const saveDocsToLibrary = useCallback(async (docs: ImportedDoc[]) => {
+    await saveLibraryDocs(docs);
+    setImportedDocs((current) => dedupeImportedDocs([...docs, ...current]));
+    setMarkdownByFile((current) => {
+      const next = { ...current };
+      for (const doc of docs) next[doc.file] = doc.markdown;
+      return next;
+    });
+    setCurrentDocFile(docs[0]?.file ?? null);
   }, []);
+
+  const saveSourceEdit = useCallback(async () => {
+    if (!currentDoc || !currentDocFile) return;
+    const now = new Date().toISOString();
+    const previous = importedDocs.find((doc) => doc.file === currentDocFile);
+    const nextDoc: ImportedDoc = {
+      file: currentDocFile,
+      title: extractTitleFromMarkdown(sourceDraft, previous?.originalName ?? currentDoc.title),
+      group: previous?.group ?? currentDoc.group,
+      sourceType: previous?.sourceType ?? currentDoc.sourceType,
+      originalName: previous?.originalName ?? currentDoc.originalName,
+      relativePath: previous?.relativePath ?? currentDoc.relativePath,
+      markdown: sourceDraft,
+      createdAt: previous?.createdAt ?? currentDoc.createdAt ?? now,
+      updatedAt: now,
+    };
+    await saveLibraryDocs([nextDoc]);
+    setImportedDocs((current) =>
+      dedupeImportedDocs(current.map((doc) => (doc.file === currentDocFile ? nextDoc : doc))),
+    );
+    setMarkdownByFile((current) => ({ ...current, [currentDocFile]: sourceDraft }));
+    setIsEditingSource(false);
+    setSelection(null);
+    setActiveBlockId(null);
+    setSourceStatus("已保存源文");
+    window.setTimeout(() => {
+      setSourceStatus((current) => (current === "已保存源文" ? "" : current));
+    }, 1800);
+  }, [currentDoc, currentDocFile, importedDocs, sourceDraft]);
+
+  const createBlankDocument = useCallback(async () => {
+    setImportError("");
+    const now = new Date().toISOString();
+    const doc: ImportedDoc = {
+      file: `local:${Date.now()}-blank`,
+      title: "未命名文档",
+      group: "我的文档",
+      sourceType: "blank",
+      markdown: EMPTY_DOC_TEMPLATE,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await saveDocsToLibrary([doc]);
+  }, [saveDocsToLibrary]);
+
+  const importDocuments = useCallback(async (files: FileList | null, mode: "file" | "folder" | "html") => {
+    if (!files?.length) return;
+    setImportError("");
+    const allFiles = Array.from(files);
+    const assetMap = await createImageAssetMap(allFiles.filter(isImageFile));
+    const accepted = allFiles.filter((file) =>
+      mode === "html"
+        ? /\.(html|htm)$/i.test(file.name) || file.type === "text/html"
+        : /\.(md|markdown|txt|html|htm)$/i.test(file.name) ||
+          ["text/markdown", "text/plain", "text/html"].includes(file.type),
+    );
+    if (!accepted.length) {
+      setImportError(mode === "html" ? "请选择 HTML 文件。" : "请选择 Markdown、纯文本或 HTML 文件。");
+      return;
+    }
+
+    try {
+      const now = new Date().toISOString();
+      const imported = await Promise.all(
+        accepted.map(async (file, index) => {
+          if (file.size > 8_000_000) {
+            throw new Error(`${file.name} 超过 8MB，当前浏览器本地文档库暂不适合导入这么大的文件。`);
+          }
+          const raw = await file.text();
+          const isHtml = /\.(html|htm)$/i.test(file.name) || file.type === "text/html";
+          const relativePath = getRelativePath(file);
+          const markdownValue = isHtml
+            ? htmlToMarkdown(raw, file.name, assetMap, relativePath)
+            : rewriteMarkdownImageSources(raw, assetMap, relativePath);
+          const title = extractTitleFromMarkdown(markdownValue, file.name);
+          const sourceType: SourceType = isHtml ? "html-file" : mode === "folder" ? "folder-file" : "markdown-file";
+          return {
+            file: `local:${Date.now()}-${index}-${slugify(file.name)}`,
+            title,
+            group: mode === "folder" ? "文件夹导入" : "我的文档",
+            sourceType,
+            originalName: file.name,
+            relativePath,
+            markdown: markdownValue,
+            createdAt: now,
+            updatedAt: now,
+          };
+        }),
+      );
+      await saveDocsToLibrary(imported);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "导入失败。");
+    }
+  }, [saveDocsToLibrary]);
+
+  const deleteImportedDocument = useCallback(async (docFile: string) => {
+    const doc = importedDocs.find((item) => item.file === docFile);
+    if (!doc) return;
+    const confirmed = window.confirm(
+      `确定从浏览器本地文档库移除「${doc.title}」吗？\n\n这只会删除浏览器里的阅读记录、笔记和 AI 沉淀，不会删除你电脑上的原始文件。`,
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteLibraryDoc(docFile);
+      setImportedDocs((current) => current.filter((item) => item.file !== docFile));
+      setMarkdownByFile((current) => {
+        const next = { ...current };
+        delete next[docFile];
+        return next;
+      });
+      setAnnotations((current) => current.filter((item) => item.docFile !== docFile));
+      setAiThreads((current) => current.filter((item) => item.docFile !== docFile));
+      if (currentDocFile === docFile) setCurrentDocFile(null);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "删除浏览器记录失败。");
+    }
+  }, [currentDocFile, importedDocs]);
 
   const startResizeStudyRail = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -462,26 +754,51 @@ export default function App() {
   }, [studyWidth]);
 
   return (
-    <div className="app" data-theme={theme}>
+    <div className={currentDoc && isImmersive ? "app is-immersive" : "app"} data-theme={theme}>
       <header className="topbar">
-        <button className="topbar-icon" type="button" aria-label="菜单">
+        <button className="topbar-icon" type="button" aria-label="工作区首页" onClick={() => setCurrentDocFile(null)}>
           ≡
         </button>
         <div className="brand">
-          <span className="brand-script">Hermes</span>
+          <span className="brand-script">Margin</span>
           <span className="brand-separator">/</span>
           <strong>阅读工作台</strong>
         </div>
-        <div className="topbar-current">{currentDoc.title}</div>
+        <div className="topbar-current">{currentDoc?.title ?? "工作区首页"}</div>
         <div className="topbar-actions">
           <label className="topbar-search">
             <MagnifyingGlass size={15} />
             <input
               value={query}
+              disabled={!currentDoc}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索当前文档"
             />
           </label>
+          <button
+            className="topbar-text-button"
+            disabled={!isEditableDoc}
+            type="button"
+            title={isEditableDoc ? "编辑当前文档源文" : "当前文档不可编辑"}
+            onClick={() => {
+              setIsImmersive(false);
+              setSourceDraft(markdown);
+              setIsEditingSource(true);
+            }}
+          >
+            <PencilSimple size={15} />
+            编辑源文
+          </button>
+          <button
+            className="topbar-text-button"
+            disabled={!currentDoc || isEditingSource}
+            type="button"
+            title={isEditingSource ? "源文编辑时暂不可进入沉浸阅读" : isImmersive ? "退出沉浸式阅读" : "进入沉浸式阅读"}
+            onClick={() => setIsImmersive((value) => !value)}
+          >
+            {isImmersive ? <CornersIn size={15} /> : <CornersOut size={15} />}
+            {isImmersive ? "退出沉浸" : "沉浸阅读"}
+          </button>
           <div className="font-controls" title="字号">
             <button type="button" onClick={() => setFontSize((value) => Math.max(MIN_READER_FONT_SIZE, value - 1))}>
               A−
@@ -501,37 +818,126 @@ export default function App() {
           >
             {theme === "light" ? <Moon size={17} /> : <Sun size={17} />}
           </button>
-          <button className="topbar-icon" type="button" aria-label="导出笔记" onClick={exportNotes}>
+          <button
+            className="topbar-icon"
+            disabled={!currentDoc}
+            type="button"
+            aria-label="导出笔记"
+            onClick={exportNotes}
+          >
             <Export size={16} />
+          </button>
+          <button
+            className="topbar-text-button"
+            disabled={!currentDoc || pptBusy || isEditingSource}
+            type="button"
+            title="按金山云方案风格导出当前文档为 PPTX"
+            onClick={() => void exportPresentation()}
+          >
+            <FilePpt size={15} />
+            {pptBusy ? "生成中..." : "导出 PPT"}
           </button>
         </div>
       </header>
 
-      <main className="workspace" style={{ "--study-width": `${studyWidth}px` } as React.CSSProperties}>
+      <main
+        className={currentDoc ? "workspace" : "workspace is-home"}
+        style={{ "--study-width": `${studyWidth}px` } as React.CSSProperties}
+      >
         <aside className="doc-rail">
-          <nav aria-label="Hermes 文档">
-            {Object.entries(docsByGroup).map(([group, docs]) => (
-              <section key={group} className="nav-group">
-                <h2>{group}</h2>
-                {docs.map((doc) => (
-                  <button
-                    key={doc.file}
-                    className={doc.file === currentDocFile ? "doc-link active" : "doc-link"}
-                    type="button"
-                    onClick={() => setCurrentDocFile(doc.file)}
-                  >
-                    {doc.title}
-                  </button>
-                ))}
-              </section>
-            ))}
+          <div className="import-box">
+            <button type="button" onClick={() => void createBlankDocument()}>
+              <Plus size={15} />
+              新建空白文档
+            </button>
+            <button type="button" onClick={() => markdownInputRef.current?.click()}>
+              <UploadSimple size={15} />
+              打开 Markdown
+            </button>
+            <button type="button" onClick={() => folderInputRef.current?.click()}>
+              <UploadSimple size={15} />
+              打开文件夹
+            </button>
+            <button type="button" onClick={() => htmlInputRef.current?.click()}>
+              <UploadSimple size={15} />
+              打开 HTML
+            </button>
+            <input
+              ref={markdownInputRef}
+              hidden
+              multiple
+              type="file"
+              accept=".md,.markdown,.txt,text/markdown,text/plain"
+              onChange={(event) => {
+                void importDocuments(event.currentTarget.files, "file");
+                event.currentTarget.value = "";
+              }}
+            />
+            <input
+              ref={folderInputRef}
+              hidden
+              multiple
+              type="file"
+              accept=".md,.markdown,.txt,.html,.htm,text/markdown,text/plain,text/html"
+              {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+              onChange={(event) => {
+                void importDocuments(event.currentTarget.files, "folder");
+                event.currentTarget.value = "";
+              }}
+            />
+            <input
+              ref={htmlInputRef}
+              hidden
+              multiple
+              type="file"
+              accept=".html,.htm,text/html"
+              onChange={(event) => {
+                void importDocuments(event.currentTarget.files, "html");
+                event.currentTarget.value = "";
+              }}
+            />
+            {importError ? <p className="import-error">{importError}</p> : null}
+          </div>
+          <nav aria-label="本地文档库">
+            {Object.entries(docsByGroup).length ? (
+              Object.entries(docsByGroup).map(([group, docs]) => (
+                <section key={group} className="nav-group">
+                  <h2>{group}</h2>
+                  {docs.map((doc) => (
+                    <div key={doc.file} className="doc-link-row">
+                      <button
+                        className={doc.file === currentDocFile ? "doc-link active" : "doc-link"}
+                        type="button"
+                        onClick={() => setCurrentDocFile(doc.file)}
+                      >
+                        {doc.title}
+                      </button>
+                      <button
+                        className="doc-delete"
+                        type="button"
+                        title="只删除浏览器记录，不删除原始文件"
+                        aria-label={`删除 ${doc.title} 的浏览器记录`}
+                        onClick={() => void deleteImportedDocument(doc.file)}
+                      >
+                        <Trash size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </section>
+              ))
+            ) : (
+              <div className="rail-empty">
+                还没有本地文档。新建一篇空白文档，或打开 Markdown / HTML 文件开始。
+              </div>
+            )}
           </nav>
           <div className="rail-note">
-            <strong>基于 v0.13.0 文档快照</strong>
-            <span>笔记、概念卡和 AI 答案都保存在浏览器本地。</span>
+            <strong>本地优先</strong>
+            <span>导入文档、笔记、概念卡和 AI 答案都保存在当前浏览器。</span>
           </div>
         </aside>
 
+        {currentDoc ? (
         <section className="reader-shell">
           <div className="progress-track">
             <span style={{ width: `${progress}%` }} />
@@ -546,21 +952,35 @@ export default function App() {
             <div className="reader-inner" style={{ maxWidth: `${measure}ch`, fontSize }}>
               {loadError ? (
                 <div className="reader-error">{loadError}</div>
+              ) : isEditingSource && currentDoc ? (
+                <SourceEditor
+                  docTitle={currentDoc.title}
+                  draft={sourceDraft}
+                  onCancel={() => {
+                    setSourceDraft(markdown);
+                    setIsEditingSource(false);
+                  }}
+                  onChange={setSourceDraft}
+                  onSave={() => void saveSourceEdit()}
+                />
               ) : markdown ? (
                 <>
                   <div className="doc-meta">
                     <span>约 {Math.max(1, Math.round(markdown.length / 800))} 分钟</span>
-                    <span>{DOCS.findIndex((doc) => doc.file === currentDocFile) + 1} / {DOCS.length}</span>
+                    <span>{allDocs.findIndex((doc) => doc.file === currentDocFile) + 1} / {allDocs.length}</span>
                     <span>{parsed.blocks.length} 个阅读块</span>
+                    <span>{sourceTypeLabel(currentDoc.sourceType)}</span>
+                    {sourceStatus ? <span>{sourceStatus}</span> : null}
                     {query.trim() ? <span>{matchingBlocks} 个匹配块</span> : null}
                   </div>
                   {parsed.blocks.map((block) => (
                     <MarkdownBlock
                       key={block.id}
                       block={block}
-                      annotations={currentAnnotations.filter((item) => item.blockId === block.id)}
+                      annotations={currentAnnotations.filter((item) => annotationBelongsToBlock(item, block))}
                       searchTerms={searchTerms}
                       selected={selection?.blockId === block.id}
+                      focused={flashBlockId === block.id}
                     />
                   ))}
                 </>
@@ -570,7 +990,19 @@ export default function App() {
             </div>
           </article>
         </section>
+        ) : (
+          <StartWorkspace
+            importedDocs={importedDocs}
+            onCreateBlank={() => void createBlankDocument()}
+            onOpenMarkdown={() => markdownInputRef.current?.click()}
+            onOpenFolder={() => folderInputRef.current?.click()}
+            onOpenHtml={() => htmlInputRef.current?.click()}
+            onSelectDoc={setCurrentDocFile}
+            onDeleteDoc={(docFile) => void deleteImportedDocument(docFile)}
+          />
+        )}
 
+        {currentDoc ? (
         <aside className="study-rail">
           <div
             className="rail-resizer"
@@ -613,6 +1045,19 @@ export default function App() {
             <label className="field-label" htmlFor="note-draft">
               我的理解
             </label>
+            <div className="kind-picker" aria-label="笔记类型">
+              {NOTE_KIND_OPTIONS.map((option) => (
+                <button
+                  key={option.kind}
+                  className={noteKind === option.kind ? "active" : ""}
+                  disabled={!selection}
+                  type="button"
+                  onClick={() => setNoteKind(option.kind)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
             <textarea
               id="note-draft"
               className="note-input"
@@ -625,7 +1070,7 @@ export default function App() {
               className="primary-button"
               disabled={!selection || !noteDraft.trim()}
               type="button"
-              onClick={() => addAnnotation("note", noteDraft.trim())}
+              onClick={() => addAnnotation(noteKind, noteDraft.trim())}
             >
               <NotePencil size={16} />
               保存笔记
@@ -712,13 +1157,151 @@ export default function App() {
                   />
                 ))}
               {!currentAnnotations.length && !currentThreads.length ? (
-                <div className="empty-state">选中 Hermes 文档里的关键句，笔记和 AI 答案会在这里形成复习线索。</div>
+                <div className="empty-state">选中文档里的关键句，笔记和 AI 答案会在这里形成复习线索。</div>
               ) : null}
             </div>
           </section>
         </aside>
+        ) : null}
       </main>
+      {currentDoc && isImmersive ? (
+        <button className="immersive-exit" type="button" onClick={() => setIsImmersive(false)}>
+          <CornersIn size={16} />
+          退出沉浸阅读
+        </button>
+      ) : null}
     </div>
+  );
+}
+
+function SourceEditor({
+  docTitle,
+  draft,
+  onCancel,
+  onChange,
+  onSave,
+}: {
+  docTitle: string;
+  draft: string;
+  onCancel: () => void;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <section className="source-editor" aria-label="源文编辑器">
+      <div className="source-editor-head">
+        <div>
+          <div className="section-kicker">源文编辑</div>
+          <h1>{docTitle}</h1>
+        </div>
+        <div className="source-editor-actions">
+          <button type="button" onClick={onCancel}>
+            <X size={15} />
+            取消
+          </button>
+          <button className="save-source" type="button" onClick={onSave}>
+            <Check size={15} />
+            保存源文
+          </button>
+        </div>
+      </div>
+      <textarea
+        value={draft}
+        spellCheck={false}
+        onChange={(event) => onChange(event.currentTarget.value)}
+      />
+      <div className="source-editor-foot">
+        <span>{draft.length} 字符</span>
+        <span>保存后会重新生成目录和阅读块，并写入浏览器本地文档库。</span>
+      </div>
+    </section>
+  );
+}
+
+function StartWorkspace({
+  importedDocs,
+  onCreateBlank,
+  onOpenFolder,
+  onOpenHtml,
+  onOpenMarkdown,
+  onSelectDoc,
+  onDeleteDoc,
+}: {
+  importedDocs: ImportedDoc[];
+  onCreateBlank: () => void;
+  onOpenFolder: () => void;
+  onOpenHtml: () => void;
+  onOpenMarkdown: () => void;
+  onSelectDoc: (docFile: string) => void;
+  onDeleteDoc: (docFile: string) => void;
+}) {
+  const recentDocs = importedDocs.slice(0, 6);
+
+  return (
+    <section className="start-shell">
+      <div className="start-inner">
+        <div className="start-copy">
+          <div className="section-kicker">本地阅读工作区</div>
+          <h1>从空白文档、文件夹或网页资料开始。</h1>
+          <p>
+            打开 Markdown、纯文本或 HTML 文件后，文档会保存到浏览器本地文档库；你可以继续做批注、提问、沉淀笔记。
+          </p>
+        </div>
+
+        <div className="start-actions" aria-label="开始">
+          <button type="button" onClick={onCreateBlank}>
+            <strong>新建空白文档</strong>
+            <span>从一份可编辑的 Markdown 草稿开始</span>
+          </button>
+          <button type="button" onClick={onOpenMarkdown}>
+            <strong>打开 Markdown</strong>
+            <span>支持 .md、.markdown、.txt</span>
+          </button>
+          <button type="button" onClick={onOpenFolder}>
+            <strong>打开文件夹</strong>
+            <span>批量导入文件夹里的文档资料</span>
+          </button>
+          <button type="button" onClick={onOpenHtml}>
+            <strong>打开 HTML</strong>
+            <span>提取正文并转换为 Markdown 阅读</span>
+          </button>
+        </div>
+
+        <div className="start-lower">
+          <section className="recent-panel">
+            <div className="section-title-row">
+              <div>
+                <div className="section-kicker">最近文档</div>
+                <h2>{recentDocs.length ? "继续阅读" : "还没有导入文档"}</h2>
+              </div>
+            </div>
+            {recentDocs.length ? (
+              <div className="recent-list">
+                {recentDocs.map((doc) => (
+                  <div key={doc.file} className="recent-item">
+                    <button type="button" onClick={() => onSelectDoc(doc.file)}>
+                      <span>{doc.title}</span>
+                      <small>{doc.relativePath || sourceTypeLabel(doc.sourceType)}</small>
+                    </button>
+                    <button
+                      className="recent-delete"
+                      type="button"
+                      title="只删除浏览器记录，不删除原始文件"
+                      aria-label={`删除 ${doc.title} 的浏览器记录`}
+                      onClick={() => onDeleteDoc(doc.file)}
+                    >
+                      <Trash size={15} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p>导入或新建的文档会出现在这里，刷新浏览器后仍然保留。</p>
+            )}
+          </section>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -751,24 +1334,33 @@ function Outline({
 function MarkdownBlock({
   annotations,
   block,
+  focused,
   searchTerms,
   selected,
 }: {
   annotations: Annotation[];
   block: DocBlock;
+  focused: boolean;
   searchTerms: string[];
   selected: boolean;
 }) {
   const className = [
     "doc-block",
     selected ? "is-selected" : "",
+    focused ? "is-focused" : "",
     annotations.length ? "has-annotation" : "",
+    annotations[0] ? `has-${annotations[0].kind}` : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   const inline = (
-    <InlineText text={block.text} annotations={annotations} searchTerms={searchTerms} />
+    <InlineText
+      source={block.inlineMarkdown ?? block.markdown}
+      text={block.text}
+      annotations={annotations}
+      searchTerms={searchTerms}
+    />
   );
 
   if (block.type === "heading") {
@@ -798,15 +1390,22 @@ function MarkdownBlock({
   }
 
   if (block.type === "list") {
-    const Tag = block.ordered ? "ol" : "ul";
     return (
-      <Tag className={className} id={block.id} data-block-id={block.id}>
+      <ul className={`${className} doc-list`} id={block.id} data-block-id={block.id}>
         {(block.items ?? []).map((item, index) => (
-          <li key={`${item}-${index}`}>
-            <InlineText text={item} annotations={annotations} searchTerms={searchTerms} />
+          <li key={`${item.markdown}-${index}`} style={{ "--list-level": item.level } as React.CSSProperties}>
+            <span className="list-marker">{item.ordered ? normalizeListMarker(item.marker) : "•"}</span>
+            <span>
+              <InlineText
+                source={item.markdown}
+                text={item.text}
+                annotations={annotations}
+                searchTerms={searchTerms}
+              />
+            </span>
           </li>
         ))}
-      </Tag>
+      </ul>
     );
   }
 
@@ -851,37 +1450,19 @@ function MarkdownBlock({
 function InlineText({
   annotations,
   searchTerms,
+  source,
   text,
 }: {
   annotations: Annotation[];
   searchTerms: string[];
+  source?: string;
   text: string;
 }) {
-  const chunks = useMemo(
-    () => markText(text, annotations, searchTerms),
-    [annotations, searchTerms, text],
+  const nodes = useMemo(
+    () => renderInlineWithMarks(source ?? text, text, annotations, searchTerms),
+    [annotations, searchTerms, source, text],
   );
-  return (
-    <>
-      {chunks.map((chunk, index) => {
-        if (chunk.kind === "annotation") {
-          return (
-            <mark key={index} className="annotation-mark">
-              {renderInline(chunk.text)}
-            </mark>
-          );
-        }
-        if (chunk.kind === "search") {
-          return (
-            <mark key={index} className="search-mark">
-              {renderInline(chunk.text)}
-            </mark>
-          );
-        }
-        return <span key={index}>{renderInline(chunk.text)}</span>;
-      })}
-    </>
-  );
+  return <>{nodes}</>;
 }
 
 function AnnotationCard({
@@ -900,6 +1481,9 @@ function AnnotationCard({
       <div className="feed-card-head">
         <button type="button" onClick={onJump}>
           {annotationLabel(annotation.kind)}
+        </button>
+        <button type="button" onClick={onJump}>
+          定位原文
         </button>
         <button aria-label="删除笔记" type="button" onClick={onRemove}>
           <Trash size={14} />
@@ -949,7 +1533,8 @@ function parseMarkdown(markdown: string): {
   const blocks: DocBlock[] = [];
   const toc: TocItem[] = [];
   const headingPath: string[] = [];
-  const idCounts = new Map<string, number>();
+  const legacyIdCounts = new Map<string, number>();
+  const stableIdCounts = new Map<string, number>();
 
   const addBlock = (
     type: BlockType,
@@ -965,14 +1550,16 @@ function parseMarkdown(markdown: string): {
       blockHeadingPath = [...headingPath];
     }
 
-    const seed = `${blockHeadingPath.join("/")}|${textValue}|${markdownValue}`;
-    const baseId = `b-${hashString(seed)}`;
-    const count = idCounts.get(baseId) ?? 0;
-    idCounts.set(baseId, count + 1);
-    const id = count ? `${baseId}-${count}` : baseId;
+    const stableBaseId =
+      type === "heading"
+        ? `h-${extra.level ?? 1}-${slugifyId(blockHeadingPath.join("-") || textValue)}`
+        : `b-${slugifyId(blockHeadingPath.join("-") || "document")}-${type}`;
+    const stableId = nextCountedId(stableBaseId, stableIdCounts);
+    const legacyId = createLegacyBlockId(blockHeadingPath, textValue, markdownValue, legacyIdCounts);
 
     const block: DocBlock = {
-      id,
+      id: stableId,
+      aliases: legacyId === stableId ? [] : [legacyId],
       type,
       markdown: markdownValue,
       text: textValue,
@@ -980,7 +1567,7 @@ function parseMarkdown(markdown: string): {
       ...extra,
     };
     if (type === "heading") {
-      toc.push({ id, level: extra.level ?? 1, title: textValue });
+      toc.push({ id: stableId, level: extra.level ?? 1, title: textValue });
     }
     blocks.push(block);
   };
@@ -1009,7 +1596,10 @@ function parseMarkdown(markdown: string): {
 
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
-      addBlock("heading", line, stripInline(heading[2]), { level: heading[1].length });
+      addBlock("heading", line, stripInline(heading[2]), {
+        inlineMarkdown: heading[2],
+        level: heading[1].length,
+      });
       index += 1;
       continue;
     }
@@ -1023,17 +1613,36 @@ function parseMarkdown(markdown: string): {
     const listMatch = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.+)$/);
     if (listMatch) {
       const raw: string[] = [];
-      const items: string[] = [];
-      const ordered = /^\d/.test(listMatch[2]);
+      const items: ListItem[] = [];
       while (index < lines.length) {
         const match = lines[index].match(/^(\s*)([-*+]|\d+[.)])\s+(.+)$/);
-        if (!match || /^\d/.test(match[2]) !== ordered) break;
+        if (!match) {
+          if (items.length && /^\s{2,}\S/.test(lines[index])) {
+            raw.push(lines[index]);
+            const last = items[items.length - 1];
+            const continuation = lines[index].trim();
+            last.markdown = `${last.markdown} ${continuation}`;
+            last.text = stripInline(last.markdown);
+            index += 1;
+            continue;
+          }
+          break;
+        }
         raw.push(lines[index]);
-        const indent = match[1].length ? "  ".repeat(Math.min(3, Math.floor(match[1].length / 2))) : "";
-        items.push(`${indent}${stripInline(match[3])}`);
+        const marker = match[2];
+        items.push({
+          markdown: match[3],
+          text: stripInline(match[3]),
+          level: Math.min(4, Math.floor(match[1].replace(/\t/g, "    ").length / 2)),
+          marker,
+          ordered: /^\d/.test(marker),
+        });
         index += 1;
       }
-      addBlock("list", raw.join("\n"), items.join(" "), { items, ordered });
+      addBlock("list", raw.join("\n"), items.map((item) => item.text).join(" "), {
+        items,
+        ordered: items[0]?.ordered ?? false,
+      });
       continue;
     }
 
@@ -1044,7 +1653,7 @@ function parseMarkdown(markdown: string): {
         index += 1;
       }
       const text = raw.map((item) => item.replace(/^\s*>\s?/, "")).join(" ");
-      addBlock("quote", raw.join("\n"), stripInline(text));
+      addBlock("quote", raw.join("\n"), stripInline(text), { inlineMarkdown: text });
       continue;
     }
 
@@ -1082,7 +1691,9 @@ function parseMarkdown(markdown: string): {
       paragraph.push(lines[index]);
       index += 1;
     }
-    addBlock("paragraph", paragraph.join("\n"), stripInline(paragraph.join(" ")));
+    addBlock("paragraph", paragraph.join("\n"), stripInline(paragraph.join(" ")), {
+      inlineMarkdown: paragraph.join(" "),
+    });
   }
 
   return {
@@ -1155,18 +1766,50 @@ function handleAiStreamEvent(
   if (event === "error") handlers.onError(payload.error || "AI 流式响应失败。");
 }
 
+function getAiErrorMessage(error: unknown) {
+  if (error instanceof TypeError && error.message === "Failed to fetch") {
+    return [
+      "无法连接本地 AI 代理。",
+      "请确认应用是通过 npm run dev 或 npm run preview 打开的，并且当前地址对应的 Vite 服务还在运行。",
+    ].join(" ");
+  }
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return "AI 请求失败。";
+}
+
+function findBlockById(
+  blocks: DocBlock[],
+  blockId: string | null | undefined,
+  lookup: Map<string, string>,
+) {
+  if (!blockId) return null;
+  const resolved = lookup.get(blockId) ?? blockId;
+  return blocks.find((block) => block.id === resolved) ?? null;
+}
+
+function annotationBelongsToBlock(annotation: Annotation, block: DocBlock) {
+  return annotation.blockId === block.id || Boolean(block.aliases?.includes(annotation.blockId));
+}
+
 function markText(
   text: string,
   annotations: Annotation[],
   searchTerms: string[],
-): Array<{ kind: "annotation" | "search" | "text"; text: string }> {
-  const ranges: Array<{ start: number; end: number; kind: "annotation" | "search" }> = [];
+): Array<{ start: number; end: number; kind: "annotation" | "search"; annotationKind?: AnnotationKind }> {
+  const ranges: Array<{ start: number; end: number; kind: "annotation" | "search"; annotationKind?: AnnotationKind }> = [];
 
   for (const annotation of annotations) {
     const selected = annotation.selectedText.trim();
     if (!selected || selected.length > text.length) continue;
     const start = text.indexOf(selected);
-    if (start >= 0) ranges.push({ start, end: start + selected.length, kind: "annotation" });
+    if (start >= 0) {
+      ranges.push({
+        start,
+        end: start + selected.length,
+        kind: "annotation",
+        annotationKind: annotation.kind,
+      });
+    }
   }
 
   const lower = text.toLowerCase();
@@ -1186,15 +1829,113 @@ function markText(
     accepted.push(range);
   }
 
-  const chunks: Array<{ kind: "annotation" | "search" | "text"; text: string }> = [];
-  let cursor = 0;
-  for (const range of accepted.sort((a, b) => a.start - b.start)) {
-    if (range.start > cursor) chunks.push({ kind: "text", text: text.slice(cursor, range.start) });
-    chunks.push({ kind: range.kind, text: text.slice(range.start, range.end) });
-    cursor = range.end;
+  return accepted.sort((a, b) => a.start - b.start);
+}
+
+interface InlineToken {
+  kind: "text" | "code" | "strong" | "em" | "link" | "image";
+  text: string;
+  href?: string;
+  src?: string;
+}
+
+function renderInlineWithMarks(
+  markdown: string,
+  plainText: string,
+  annotations: Annotation[],
+  searchTerms: string[],
+) {
+  const tokens = tokenizeInline(markdown);
+  const ranges = markText(plainText, annotations, searchTerms);
+  const nodes: React.ReactNode[] = [];
+  let plainCursor = 0;
+  let keyIndex = 0;
+
+  for (const token of tokens) {
+    const tokenStart = plainCursor;
+    const tokenEnd = tokenStart + token.text.length;
+    if (token.kind === "image") {
+      nodes.push(renderInlineTokenPart(token, token.text, keyIndex++));
+      plainCursor = tokenEnd;
+      continue;
+    }
+    const overlaps = ranges.filter((range) => range.start < tokenEnd && range.end > tokenStart);
+    let localCursor = 0;
+
+    for (const range of overlaps) {
+      const localStart = Math.max(0, range.start - tokenStart);
+      const localEnd = Math.min(token.text.length, range.end - tokenStart);
+      if (localStart > localCursor) {
+        nodes.push(renderInlineTokenPart(token, token.text.slice(localCursor, localStart), keyIndex++));
+      }
+      const marked = renderInlineTokenPart(token, token.text.slice(localStart, localEnd), keyIndex++);
+      nodes.push(
+        <mark
+          key={`mark-${keyIndex++}`}
+          className={
+            range.kind === "annotation"
+              ? `annotation-mark annotation-${range.annotationKind ?? "note"}`
+              : "search-mark"
+          }
+        >
+          {marked}
+        </mark>,
+      );
+      localCursor = localEnd;
+    }
+
+    if (localCursor < token.text.length) {
+      nodes.push(renderInlineTokenPart(token, token.text.slice(localCursor), keyIndex++));
+    }
+    plainCursor = tokenEnd;
   }
-  if (cursor < text.length) chunks.push({ kind: "text", text: text.slice(cursor) });
-  return chunks.length ? chunks : [{ kind: "text", text }];
+
+  return nodes.length ? nodes : [plainText];
+}
+
+function tokenizeInline(value: string): InlineToken[] {
+  const tokens: InlineToken[] = [];
+  const pattern = /(!\[[^\]]*\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|\[[^\]]+\]\([^)]+\))/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value))) {
+    if (match.index > cursor) tokens.push({ kind: "text", text: value.slice(cursor, match.index) });
+    const token = match[0];
+    if (token.startsWith("![")) {
+      const image = token.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+      if (image) tokens.push({ kind: "image", text: image[1], src: image[2] });
+    } else if (token.startsWith("`")) {
+      tokens.push({ kind: "code", text: token.slice(1, -1) });
+    } else if (token.startsWith("**") || token.startsWith("__")) {
+      tokens.push({ kind: "strong", text: token.slice(2, -2) });
+    } else if (token.startsWith("*") || token.startsWith("_")) {
+      tokens.push({ kind: "em", text: token.slice(1, -1) });
+    } else {
+      const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (link) tokens.push({ kind: "link", text: link[1], href: link[2] });
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < value.length) tokens.push({ kind: "text", text: value.slice(cursor) });
+  return tokens;
+}
+
+function renderInlineTokenPart(token: InlineToken, text: string, key: number) {
+  if (token.kind === "image" && token.src) {
+    return <img key={key} className="doc-image" src={token.src} alt={token.text} loading="lazy" />;
+  }
+  if (!text) return null;
+  if (token.kind === "code") return <code key={key}>{text}</code>;
+  if (token.kind === "strong") return <strong key={key}>{text}</strong>;
+  if (token.kind === "em") return <em key={key}>{text}</em>;
+  if (token.kind === "link") {
+    return (
+      <a key={key} href={token.href} target="_blank" rel="noreferrer">
+        {text}
+      </a>
+    );
+  }
+  return <span key={key}>{text}</span>;
 }
 
 function renderRichText(value: string) {
@@ -1250,17 +1991,24 @@ function renderRichText(value: string) {
 
 function renderInline(value: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  const pattern = /(!\[[^\]]*\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|\[[^\]]+\]\([^)]+\))/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(value))) {
     if (match.index > cursor) nodes.push(value.slice(cursor, match.index));
     const token = match[0];
-    if (token.startsWith("`")) {
+    if (token.startsWith("![")) {
+      const image = token.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+      if (image) {
+        nodes.push(
+          <img key={`${token}-${match.index}`} className="doc-image" src={image[2]} alt={image[1]} loading="lazy" />,
+        );
+      }
+    } else if (token.startsWith("`")) {
       nodes.push(<code key={`${token}-${match.index}`}>{token.slice(1, -1)}</code>);
-    } else if (token.startsWith("**")) {
+    } else if (token.startsWith("**") || token.startsWith("__")) {
       nodes.push(<strong key={`${token}-${match.index}`}>{token.slice(2, -2)}</strong>);
-    } else if (token.startsWith("*")) {
+    } else if (token.startsWith("*") || token.startsWith("_")) {
       nodes.push(<em key={`${token}-${match.index}`}>{token.slice(1, -1)}</em>);
     } else {
       const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
@@ -1284,15 +2032,583 @@ function parseTableRow(value: string) {
     .replace(/^\|/, "")
     .replace(/\|$/, "")
     .split("|")
-    .map((cell) => stripInline(cell.trim()));
+    .map((cell) => cell.trim());
+}
+
+function sourceTypeLabel(sourceType: SourceType) {
+  const labels: Record<SourceType, string> = {
+    blank: "空白文档",
+    "folder-file": "文件夹导入",
+    "html-file": "HTML",
+    "markdown-file": "Markdown",
+  };
+  return labels[sourceType];
+}
+
+function sanitizeImportedDocs(value: unknown): ImportedDoc[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is ImportedDoc => {
+      if (!item || typeof item !== "object") return false;
+      const doc = item as Partial<ImportedDoc>;
+      return (
+        typeof doc.file === "string" &&
+        doc.file.startsWith("local:") &&
+        typeof doc.title === "string" &&
+        typeof doc.markdown === "string" &&
+        typeof doc.createdAt === "string"
+      );
+    })
+    .map((doc) => ({
+      ...doc,
+      group: doc.group || "我的文档",
+      sourceType: doc.sourceType ?? "markdown-file",
+      updatedAt: doc.updatedAt ?? doc.createdAt,
+    }))
+    .slice(0, 100);
+}
+
+function dedupeImportedDocs(docs: ImportedDoc[]) {
+  const seen = new Set<string>();
+  const result: ImportedDoc[] = [];
+  for (const doc of docs) {
+    if (seen.has(doc.file)) continue;
+    seen.add(doc.file);
+    result.push(doc);
+  }
+  return result.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function getRelativePath(file: File) {
+  return (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+}
+
+function htmlToMarkdown(
+  html: string,
+  fallbackName: string,
+  assetMap = new Map<string, string>(),
+  relativePath = fallbackName,
+) {
+  const documentValue = new DOMParser().parseFromString(html, "text/html");
+  const title = documentValue.querySelector("title")?.textContent?.trim() || fallbackName;
+  const body = documentValue.body;
+  const lines: string[] = [];
+  if (title) lines.push(`# ${title}`, "");
+
+  const walk = (node: Element) => {
+    const tag = node.tagName.toLowerCase();
+    if (["script", "style", "nav", "footer", "header", "noscript"].includes(tag)) return;
+    if (tag === "svg") {
+      const image = svgElementToMarkdown(node);
+      if (image) lines.push(image, "");
+      return;
+    }
+    if (node.classList.contains("figure")) {
+      const svg = node.querySelector("svg");
+      const caption = node.querySelector(".figure-caption")?.textContent?.trim() || "";
+      if (svg) {
+        const image = svgElementToMarkdown(svg, caption || "SVG 图示");
+        if (image) lines.push(image, "");
+        if (caption) lines.push(`*${caption}*`, "");
+        return;
+      }
+    }
+    if (/^h[1-6]$/.test(tag)) {
+      const level = Number(tag.slice(1));
+      lines.push(`${"#".repeat(level)} ${inlineHtmlToMarkdown(node, assetMap, relativePath)}`, "");
+      return;
+    }
+    if (tag === "img") {
+      const image = imageElementToMarkdown(node, assetMap, relativePath);
+      if (image) lines.push(image, "");
+      return;
+    }
+    if (tag === "p") {
+      const text = inlineHtmlToMarkdown(node, assetMap, relativePath);
+      if (text) lines.push(text, "");
+      return;
+    }
+    if (tag === "blockquote") {
+      const text = inlineHtmlToMarkdown(node, assetMap, relativePath);
+      if (text) lines.push(`> ${text}`, "");
+      return;
+    }
+    if (tag === "pre") {
+      lines.push("```", node.textContent?.replace(/\n+$/g, "") ?? "", "```", "");
+      return;
+    }
+    if (tag === "ul" || tag === "ol") {
+      Array.from(node.children).forEach((child, index) => {
+        if (child.tagName.toLowerCase() !== "li") return;
+        const marker = tag === "ol" ? `${index + 1}.` : "-";
+        lines.push(`${marker} ${inlineHtmlToMarkdown(child, assetMap, relativePath)}`);
+      });
+      lines.push("");
+      return;
+    }
+    if (tag === "table") {
+      const rows = Array.from(node.querySelectorAll("tr")).map((row) =>
+        Array.from(row.children).map((cell) => inlineHtmlToMarkdown(cell, assetMap, relativePath)),
+      );
+      if (rows.length) {
+        lines.push(`| ${rows[0].join(" | ")} |`);
+        lines.push(`| ${rows[0].map(() => "---").join(" | ")} |`);
+        for (const row of rows.slice(1)) lines.push(`| ${row.join(" | ")} |`);
+        lines.push("");
+      }
+      return;
+    }
+    Array.from(node.children).forEach(walk);
+  };
+
+  Array.from(body.children).forEach(walk);
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() || `# ${fallbackName}\n\n${body.textContent?.trim() ?? ""}`;
+}
+
+function inlineHtmlToMarkdown(
+  element: Element,
+  assetMap = new Map<string, string>(),
+  relativePath = "",
+): string {
+  const walk = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent?.replace(/\s+/g, " ") ?? "";
+    if (!(node instanceof Element)) return "";
+    const tag = node.tagName.toLowerCase();
+    if (tag === "img") return imageElementToMarkdown(node, assetMap, relativePath);
+    if (tag === "svg") return svgElementToMarkdown(node);
+    const content = Array.from(node.childNodes).map(walk).join("").trim();
+    if (!content) return "";
+    if (tag === "strong" || tag === "b") return `**${content}**`;
+    if (tag === "em" || tag === "i") return `*${content}*`;
+    if (tag === "code") return `\`${content}\``;
+    if (tag === "a") {
+      const href = node.getAttribute("href");
+      return href ? `[${content}](${href})` : content;
+    }
+    if (tag === "br") return "\n";
+    return content;
+  };
+  return Array.from(element.childNodes).map(walk).join("").replace(/[ \t]+/g, " ").trim();
+}
+
+function svgElementToMarkdown(element: Element, alt = "SVG 图示") {
+  const clone = element.cloneNode(true);
+  if (!(clone instanceof Element)) return "";
+  if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  const svg = new XMLSerializer().serializeToString(clone);
+  return `![${escapeMarkdownAlt(alt)}](data:image/svg+xml;base64,${base64EncodeUnicode(svg)})`;
+}
+
+function imageElementToMarkdown(
+  element: Element,
+  assetMap = new Map<string, string>(),
+  relativePath = "",
+) {
+  const src = element.getAttribute("src") || element.getAttribute("data-src") || "";
+  if (!src) return "";
+  const alt = element.getAttribute("alt") || element.getAttribute("title") || "图片";
+  return `![${escapeMarkdownAlt(alt)}](${resolveAssetSrc(src, assetMap, relativePath)})`;
+}
+
+function rewriteMarkdownImageSources(
+  markdown: string,
+  assetMap = new Map<string, string>(),
+  relativePath = "",
+) {
+  return markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, src: string) => {
+    return `![${alt}](${resolveAssetSrc(src.trim(), assetMap, relativePath)})`;
+  });
+}
+
+async function createImageAssetMap(files: File[]) {
+  const entries = await Promise.all(
+    files.map(async (file) => {
+      if (file.size > 12_000_000) return [];
+      const relativePath = getRelativePath(file);
+      const dataUrl = await fileToDataUrl(file);
+      const keys = new Set<string>([
+        normalizeAssetPath(relativePath),
+        normalizeAssetPath(relativePath.split("/").slice(1).join("/")),
+        normalizeAssetPath(file.name),
+      ]);
+      return Array.from(keys)
+        .filter(Boolean)
+        .map((key) => [key, dataUrl] as const);
+    }),
+  );
+  return new Map(entries.flat());
+}
+
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("图片读取失败。"));
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.readAsDataURL(file);
+  });
+}
+
+function base64EncodeUnicode(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+}
+
+function isImageFile(file: File) {
+  return file.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(file.name);
+}
+
+function resolveAssetSrc(src: string, assetMap: Map<string, string>, relativePath: string) {
+  const trimmed = src.trim();
+  if (/^(data:|https?:|blob:)/i.test(trimmed)) return trimmed;
+  const clean = normalizeAssetPath(trimmed.replace(/[?#].*$/, ""));
+  const baseDir = normalizeAssetPath(relativePath).split("/").slice(0, -1).join("/");
+  const candidates = [
+    normalizeAssetPath(`${baseDir}/${clean}`),
+    clean,
+    normalizeAssetPath(clean.split("/").slice(1).join("/")),
+    normalizeAssetPath(clean.split("/").pop() ?? clean),
+  ];
+  return candidates.map((key) => assetMap.get(key)).find(Boolean) ?? trimmed;
+}
+
+function normalizeAssetPath(value: string) {
+  const decoded = decodeURIComponent(value).replace(/\\/g, "/");
+  const parts: string[] = [];
+  for (const part of decoded.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return parts.join("/");
+}
+
+function escapeMarkdownAlt(value: string) {
+  return value.replace(/[\[\]]/g, "");
+}
+
+function openLibraryDb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      reject(new Error("当前浏览器不支持 IndexedDB。"));
+      return;
+    }
+    const request = indexedDB.open(LIBRARY_DB_NAME, LIBRARY_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(LIBRARY_STORE_NAME)) {
+        db.createObjectStore(LIBRARY_STORE_NAME, { keyPath: "file" });
+      }
+    };
+    request.onerror = () => reject(request.error ?? new Error("无法打开本地文档库。"));
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+async function loadLibraryDocs() {
+  const db = await openLibraryDb();
+  return new Promise<ImportedDoc[]>((resolve, reject) => {
+    const transaction = db.transaction(LIBRARY_STORE_NAME, "readonly");
+    const request = transaction.objectStore(LIBRARY_STORE_NAME).getAll();
+    request.onerror = () => reject(request.error ?? new Error("无法读取本地文档库。"));
+    request.onsuccess = () => resolve(sanitizeImportedDocs(request.result));
+    transaction.oncomplete = () => db.close();
+  });
+}
+
+async function saveLibraryDocs(docs: ImportedDoc[]) {
+  const db = await openLibraryDb();
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(LIBRARY_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(LIBRARY_STORE_NAME);
+    for (const doc of docs) store.put(doc);
+    transaction.onerror = () => reject(transaction.error ?? new Error("无法写入本地文档库。"));
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+  });
+}
+
+async function deleteLibraryDoc(docFile: string) {
+  const db = await openLibraryDb();
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(LIBRARY_STORE_NAME, "readwrite");
+    transaction.objectStore(LIBRARY_STORE_NAME).delete(docFile);
+    transaction.onerror = () => reject(transaction.error ?? new Error("删除浏览器记录失败。"));
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+  });
+}
+
+function extractTitleFromMarkdown(markdown: string, fallbackName: string) {
+  const heading = markdown.match(/^#\s+(.+)$/m);
+  if (heading) return stripInline(heading[1]).slice(0, 80);
+  return fallbackName.replace(/\.(md|markdown|txt|html|htm)$/i, "").slice(0, 80) || "未命名文档";
+}
+
+function normalizeListMarker(marker: string) {
+  return marker.replace(/[.)]$/, ".");
+}
+
+interface PptExportInput {
+  blocks: DocBlock[];
+  markdown: string;
+  title: string;
+}
+
+interface PptSection {
+  title: string;
+  chunks: PptChunk[];
+}
+
+type PptChunk =
+  | { kind: "text"; text: string; tone?: "quote" | "code" | "table" }
+  | { kind: "image"; alt: string; src: string };
+
+const KSC_PPT = {
+  accent: "E6002D",
+  accent2: "F76727",
+  dark: "202630",
+  dark2: "171616",
+  muted: "6E747A",
+  pale: "E7E6E6",
+  panel: "F8F9FA",
+  white: "FFFFFF",
+};
+
+async function exportMarkdownAsPptx({ blocks, markdown, title }: PptExportInput) {
+  const { default: PptxGen } = await import("pptxgenjs");
+  const pptx = new PptxGen();
+  pptx.layout = "LAYOUT_WIDE";
+  pptx.author = "Margin Note Reader";
+  pptx.company = "Margin Note Reader";
+  pptx.subject = "Markdown / HTML 转 PPT";
+  pptx.title = title;
+  pptx.theme = {
+    bodyFontFace: "Microsoft YaHei",
+    headFontFace: "Microsoft YaHei",
+  };
+
+  const sections = createPptSections(blocks, title);
+  addPptCover(pptx, title, markdown);
+  addPptAgenda(pptx, sections);
+
+  sections.forEach((section, sectionIndex) => {
+    addPptSectionSlide(pptx, section.title, sectionIndex + 1);
+    const textBatch: PptChunk[] = [];
+    let batchChars = 0;
+
+    const flush = () => {
+      if (!textBatch.length) return;
+      addPptContentSlide(pptx, section.title, textBatch, sectionIndex + 1);
+      textBatch.length = 0;
+      batchChars = 0;
+    };
+
+    section.chunks.forEach((chunk) => {
+      if (chunk.kind === "image") {
+        flush();
+        addPptImageSlide(pptx, section.title, chunk, sectionIndex + 1);
+        return;
+      }
+      const nextLength = chunk.text.length;
+      if (textBatch.length >= 6 || batchChars + nextLength > 560) flush();
+      textBatch.push(chunk);
+      batchChars += nextLength;
+    });
+    flush();
+  });
+
+  const fileName = `${slugify(title) || "margin-note-reader"}.pptx`;
+  await pptx.writeFile({ fileName, compression: true });
+}
+
+function createPptSections(blocks: DocBlock[], fallbackTitle: string) {
+  const sections: PptSection[] = [];
+  let current: PptSection = { title: fallbackTitle || "未命名文档", chunks: [] };
+
+  const pushCurrent = () => {
+    if (current.chunks.length) sections.push(current);
+  };
+
+  for (const block of blocks) {
+    if (block.type === "heading" && (block.level ?? 1) <= 2) {
+      pushCurrent();
+      current = { title: stripInline(block.text || block.markdown), chunks: [] };
+      continue;
+    }
+
+    const image = extractMarkdownImage(block.markdown);
+    if (image) {
+      current.chunks.push({ kind: "image", ...image });
+      continue;
+    }
+
+    if (block.type === "list" && block.items?.length) {
+      block.items.forEach((item) => {
+        const text = cleanPptText(item.text);
+        if (text) current.chunks.push({ kind: "text", text });
+      });
+      continue;
+    }
+
+    if (block.type === "table") {
+      const rows = [block.header ?? [], ...(block.rows ?? [])]
+        .filter((row) => row.some(Boolean))
+        .map((row) => row.join(" / "));
+      rows.slice(0, 6).forEach((row) => current.chunks.push({ kind: "text", text: cleanPptText(row), tone: "table" }));
+      continue;
+    }
+
+    const text = cleanPptText(block.text);
+    if (!text || block.type === "rule") continue;
+    current.chunks.push({
+      kind: "text",
+      text,
+      tone: block.type === "quote" ? "quote" : block.type === "code" ? "code" : undefined,
+    });
+  }
+
+  pushCurrent();
+  return sections.filter((section) => section.title || section.chunks.length).slice(0, 36);
+}
+
+function addPptCover(pptx: PptxGenJS, title: string, markdown: string) {
+  const slide = pptx.addSlide();
+  slide.background = { color: KSC_PPT.dark };
+  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 7.5, fill: { color: KSC_PPT.dark }, line: { color: KSC_PPT.dark } });
+  slide.addShape(pptx.ShapeType.rect, { x: 0.72, y: 1.06, w: 0.1, h: 1.78, fill: { color: KSC_PPT.accent }, line: { color: KSC_PPT.accent } });
+  slide.addText("Margin Note Reader", { x: 0.88, y: 0.62, w: 3.8, h: 0.24, fontFace: "Arial", fontSize: 8.5, color: KSC_PPT.pale, bold: true, charSpacing: 1.2 });
+  slide.addText(truncatePptText(title, 54), { x: 0.88, y: 1.1, w: 9.8, h: 1.25, fontFace: "Microsoft YaHei", fontSize: 33, bold: true, color: KSC_PPT.white, breakLine: false, fit: "shrink" });
+  slide.addText("Markdown / HTML 自动转 PPT", { x: 0.9, y: 2.65, w: 6.8, h: 0.4, fontFace: "Microsoft YaHei", fontSize: 15, color: KSC_PPT.accent2, bold: true });
+  slide.addText(`共 ${Math.max(1, Math.round(markdown.length / 800))} 分钟阅读量 · ${new Date().toLocaleDateString("zh-CN")}`, { x: 0.9, y: 6.46, w: 7.4, h: 0.28, fontFace: "Microsoft YaHei", fontSize: 9.5, color: "C6CBD1" });
+  slide.addShape(pptx.ShapeType.rect, { x: 10.52, y: 0, w: 2.82, h: 7.5, fill: { color: KSC_PPT.accent, transparency: 4 }, line: { color: KSC_PPT.accent } });
+  slide.addShape(pptx.ShapeType.rect, { x: 10.03, y: 0.7, w: 2.36, h: 4.6, fill: { color: KSC_PPT.white, transparency: 86 }, line: { color: KSC_PPT.white, transparency: 100 } });
+}
+
+function addPptAgenda(pptx: PptxGenJS, sections: PptSection[]) {
+  const slide = pptx.addSlide();
+  addPptChrome(pptx, slide, "目录", "AGENDA");
+  if (!sections.length) {
+    slide.addText("当前文档还没有可转换的正文内容。", { x: 0.92, y: 1.6, w: 8.6, h: 0.42, fontFace: "Microsoft YaHei", fontSize: 16, color: KSC_PPT.muted });
+    return;
+  }
+  sections.slice(0, 8).forEach((section, index) => {
+    const y = 1.45 + index * 0.58;
+    slide.addText(String(index + 1).padStart(2, "0"), { x: 0.9, y, w: 0.54, h: 0.24, fontFace: "Arial", fontSize: 12, color: KSC_PPT.accent, bold: true });
+    slide.addText(truncatePptText(section.title, 34), { x: 1.55, y: y - 0.04, w: 9.8, h: 0.34, fontFace: "Microsoft YaHei", fontSize: 15, color: KSC_PPT.dark, bold: true });
+    slide.addShape(pptx.ShapeType.line, { x: 1.55, y: y + 0.42, w: 10.7, h: 0, line: { color: KSC_PPT.pale, width: 0.8 } });
+  });
+}
+
+function addPptSectionSlide(pptx: PptxGenJS, title: string, index: number) {
+  const slide = pptx.addSlide();
+  slide.background = { color: KSC_PPT.dark };
+  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 7.5, fill: { color: KSC_PPT.dark }, line: { color: KSC_PPT.dark } });
+  slide.addText(String(index).padStart(2, "0"), { x: 0.86, y: 1.08, w: 1.38, h: 0.72, fontFace: "Arial", fontSize: 31, bold: true, color: KSC_PPT.accent });
+  slide.addShape(pptx.ShapeType.line, { x: 0.9, y: 2.06, w: 2.25, h: 0, line: { color: KSC_PPT.accent, width: 3 } });
+  slide.addText(truncatePptText(title, 46), { x: 0.88, y: 2.42, w: 10.4, h: 1.0, fontFace: "Microsoft YaHei", fontSize: 29, bold: true, color: KSC_PPT.white, fit: "shrink" });
+  slide.addText("章节概要", { x: 0.94, y: 6.44, w: 2.2, h: 0.22, fontFace: "Microsoft YaHei", fontSize: 9.5, color: "CED4DA" });
+}
+
+function addPptContentSlide(pptx: PptxGenJS, title: string, chunks: PptChunk[], sectionIndex: number) {
+  const slide = pptx.addSlide();
+  addPptChrome(pptx, slide, title, String(sectionIndex).padStart(2, "0"));
+  slide.addShape(pptx.ShapeType.rect, { x: 0.82, y: 1.42, w: 11.72, h: 4.95, fill: { color: KSC_PPT.panel }, line: { color: KSC_PPT.pale, transparency: 8 } });
+  chunks.forEach((chunk, index) => {
+    if (chunk.kind !== "text") return;
+    const y = 1.74 + index * 0.72;
+    const isQuote = chunk.tone === "quote";
+    const isCode = chunk.tone === "code";
+    slide.addShape(pptx.ShapeType.rect, { x: 1.12, y: y + 0.09, w: 0.12, h: 0.12, fill: { color: isQuote ? KSC_PPT.accent2 : KSC_PPT.accent }, line: { color: isQuote ? KSC_PPT.accent2 : KSC_PPT.accent } });
+    slide.addText(truncatePptText(chunk.text, isCode ? 86 : 74), {
+      x: 1.42,
+      y: y - 0.02,
+      w: 10.3,
+      h: 0.47,
+      fontFace: isCode ? "JetBrains Mono" : "Microsoft YaHei",
+      fontSize: isCode ? 11 : 14,
+      color: isQuote ? KSC_PPT.muted : KSC_PPT.dark,
+      breakLine: false,
+      fit: "shrink",
+    });
+  });
+  addPptFooter(pptx, slide);
+}
+
+function addPptImageSlide(pptx: PptxGenJS, title: string, chunk: Extract<PptChunk, { kind: "image" }>, sectionIndex: number) {
+  const slide = pptx.addSlide();
+  addPptChrome(pptx, slide, title, String(sectionIndex).padStart(2, "0"));
+  slide.addShape(pptx.ShapeType.rect, { x: 0.9, y: 1.38, w: 11.5, h: 4.85, fill: { color: KSC_PPT.white }, line: { color: KSC_PPT.pale } });
+  if (chunk.src.startsWith("data:image/")) {
+    try {
+      slide.addImage({ data: chunk.src, x: 1.24, y: 1.62, w: 10.82, h: 4.25, altText: chunk.alt || "文档图片" });
+    } catch {
+      addPptImagePlaceholder(pptx, slide, chunk.alt);
+    }
+  } else {
+    addPptImagePlaceholder(pptx, slide, chunk.alt || chunk.src);
+  }
+  if (chunk.alt) {
+    slide.addText(truncatePptText(chunk.alt, 72), { x: 1.16, y: 6.02, w: 10.8, h: 0.24, fontFace: "Microsoft YaHei", fontSize: 9, color: KSC_PPT.muted, align: "center" });
+  }
+  addPptFooter(pptx, slide);
+}
+
+function addPptImagePlaceholder(pptx: PptxGenJS, slide: PptxGenJS.Slide, label: string) {
+  slide.addShape(pptx.ShapeType.rect, { x: 1.55, y: 2.15, w: 9.95, h: 2.72, fill: { color: "FFF4F4" }, line: { color: KSC_PPT.accent, transparency: 35 } });
+  slide.addText(`图片资源未内嵌\n${truncatePptText(label, 80)}`, { x: 1.82, y: 2.92, w: 9.4, h: 0.78, fontFace: "Microsoft YaHei", fontSize: 14, color: KSC_PPT.accent, align: "center", breakLine: false });
+}
+
+function addPptChrome(pptx: PptxGenJS, slide: PptxGenJS.Slide, title: string, marker: string) {
+  slide.background = { color: KSC_PPT.white };
+  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 0.18, fill: { color: KSC_PPT.accent }, line: { color: KSC_PPT.accent } });
+  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0.18, w: 13.333, h: 0.18, fill: { color: KSC_PPT.dark }, line: { color: KSC_PPT.dark } });
+  slide.addText(marker, { x: 0.82, y: 0.55, w: 0.75, h: 0.28, fontFace: "Arial", fontSize: 11, color: KSC_PPT.accent, bold: true });
+  slide.addText(truncatePptText(title, 42), { x: 1.58, y: 0.46, w: 9.5, h: 0.46, fontFace: "Microsoft YaHei", fontSize: 21, bold: true, color: KSC_PPT.dark, fit: "shrink" });
+  slide.addShape(pptx.ShapeType.line, { x: 0.84, y: 1.15, w: 11.72, h: 0, line: { color: KSC_PPT.pale, width: 0.8 } });
+}
+
+function addPptFooter(pptx: PptxGenJS, slide: PptxGenJS.Slide) {
+  slide.addShape(pptx.ShapeType.line, { x: 0.84, y: 6.82, w: 11.72, h: 0, line: { color: KSC_PPT.pale, width: 0.6 } });
+  slide.addText("Margin Note Reader · PPTX Export", { x: 0.86, y: 6.96, w: 4.2, h: 0.18, fontFace: "Arial", fontSize: 7.5, color: KSC_PPT.muted });
+}
+
+function extractMarkdownImage(value: string) {
+  const match = value.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+  if (!match) return null;
+  return { alt: match[1], src: match[2].trim() };
+}
+
+function cleanPptText(value: string) {
+  return stripInline(value)
+    .replace(/\s+/g, " ")
+    .replace(/[•●▪]/g, "")
+    .trim();
+}
+
+function truncatePptText(value: string, maxLength: number) {
+  const text = cleanPptText(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
 function annotationLabel(kind: AnnotationKind) {
   const labels: Record<AnnotationKind, string> = {
     ai: "AI 笔记",
     bookmark: "收藏",
+    citation: "引用",
+    definition: "定义",
     highlight: "重点",
+    important: "重要",
     note: "笔记",
+    question: "问题",
+    revisit: "回看",
     term: "概念卡",
   };
   return labels[kind];
@@ -1300,11 +2616,38 @@ function annotationLabel(kind: AnnotationKind) {
 
 function stripInline(value: string) {
   return value
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
     .trim();
+}
+
+function slugifyId(value: string) {
+  const slug = slugify(stripInline(value));
+  return slug || "section";
+}
+
+function nextCountedId(baseId: string, counts: Map<string, number>) {
+  const count = counts.get(baseId) ?? 0;
+  counts.set(baseId, count + 1);
+  return count ? `${baseId}-${count + 1}` : baseId;
+}
+
+function createLegacyBlockId(
+  blockHeadingPath: string[],
+  textValue: string,
+  markdownValue: string,
+  counts: Map<string, number>,
+) {
+  const seed = `${blockHeadingPath.join("/")}|${textValue}|${markdownValue}`;
+  const baseId = `b-${hashString(seed)}`;
+  const count = counts.get(baseId) ?? 0;
+  counts.set(baseId, count + 1);
+  return count ? `${baseId}-${count}` : baseId;
 }
 
 function slugify(value: string) {

@@ -8,9 +8,9 @@ Goal: prove the independent product surface and the core reading flow.
 
 Delivered:
 
-- standalone project outside Hermes Agent
+- standalone blank reading workspace
 - three-pane reading workspace
-- sample Markdown document
+- blank local document library start state
 - document outline
 - search
 - text size and line-width controls
@@ -25,20 +25,25 @@ Delivered:
 Acceptance criteria:
 
 - the product launches at its own local URL
-- the page does not expose Hermes Agent dashboard chrome
+- the page opens as a clean reading workspace without bundled project-specific materials
 - a user can read, search, select, save notes, and trigger an AI-style response
 
 ## Stage 1: Reading and Annotation Quality
 
+Status: in progress.
+
 Goal: make the local Markdown reader feel robust enough for real long documents.
+
+Delivered in the current iteration:
+
+- improved inline Markdown rendering for bold, emphasis, links, inline code, blockquotes, tables, and nested/indented lists
+- added stable block IDs based on heading scope and block order, with legacy ID aliases to preserve existing local notes
+- added click-to-source navigation and a short source flash when jumping from notebook items
+- added annotation types: important, question, definition, citation, and revisit
+- kept existing localStorage annotations compatible with the new block model
 
 Planned work:
 
-- improve Markdown parsing for nested lists, ordered lists, links, inline code, blockquotes, and tables
-- preserve basic inline formatting in rendered text instead of flattening all inline Markdown
-- add stable block IDs that survive small document edits better than index-based IDs
-- support annotation colors or types: important, question, definition, citation, revisit
-- add click-to-scroll from notebook item back to source block
 - add active-section detection while scrolling
 - add keyboard shortcuts for common reading actions
 - add mobile and narrow-screen layout refinement
@@ -52,21 +57,28 @@ Acceptance criteria:
 
 ## Stage 2: Real AI Margin
 
+Status: partially implemented.
+
 Goal: replace the local AI simulation with real contextual AI while preserving product boundaries.
+
+Delivered:
+
+- backend Vite middleware for AI requests
+- model configuration through environment variables
+- OpenAI-compatible Responses API integration
+- selected text, section Markdown, document title, and relevant notes are sent only when the user triggers AI
+- streaming AI answers in the notebook feed
+- AI answers can be saved as notes
 
 Planned work:
 
-- add a backend API endpoint for AI requests
-- support model configuration through environment variables
-- send selected text, section Markdown, document title, and relevant notes to the model
 - return concise answers with source references
-- add loading, error, empty, and retry states
+- strengthen loading, error, empty, and retry states
 - support actions:
-  - explain selected passage
   - summarize selected passage
-  - summarize current section
-  - answer custom question
-  - turn answer into saved note
+  - retry failed answer
+  - regenerate answer
+  - copy answer
 - add prompt templates for technical documents, research papers, and product docs
 
 Acceptance criteria:
@@ -78,11 +90,24 @@ Acceptance criteria:
 
 ## Stage 3: Document Persistence and Library
 
+Status: early slice implemented.
+
 Goal: move from a single local document to a lightweight local document library.
+
+Delivered:
+
+- open the app into a workspace home when no document hash is provided
+- create a blank Markdown document from the workspace home or left rail
+- edit and save user document Markdown source back to the local library
+- import local Markdown / plain text / HTML files from the workspace home or left rail
+- import a browser-selected local folder and add supported files to the library
+- preserve Markdown / HTML image references, inline SVG figures, and folder-imported relative image assets
+- store user document source in IndexedDB instead of localStorage
+- show imported and created files under local document groups
+- keep per-document annotations and AI threads keyed by document id
 
 Planned work:
 
-- create a local document store
 - support multiple documents
 - show recent documents
 - save per-document annotations and AI threads
@@ -122,11 +147,21 @@ Acceptance criteria:
 
 ## Stage 5: Importers and Format Expansion
 
+Status: early slice implemented.
+
 Goal: keep Markdown as the internal model while accepting more source formats.
+
+Delivered:
+
+- import from local Markdown files
+- import from local plain text files
+- import from local HTML files and convert readable structure to Markdown
+- import supported documents from a local folder selection
+- preserve imported images as rendered Markdown image blocks
+- export the current Markdown / HTML-derived document to PPTX with a Kingsoft Cloud-inspired enterprise deck style
 
 Planned work:
 
-- import from plain text
 - import from web article HTML
 - paste URL and convert readable content to Markdown
 - optional DOCX to Markdown conversion
@@ -163,10 +198,10 @@ Acceptance criteria:
 
 The next best iteration is Stage 1 plus a small slice of Stage 2:
 
-1. improve Markdown rendering and annotation anchoring
-2. add click-to-source navigation from notes
-3. add a real AI API boundary behind the existing AI margin UI
-4. keep the current standalone product shell unchanged
+1. finish active-section detection and outline synchronization
+2. add keyboard shortcuts for common reading actions
+3. add AI source references that jump back to source blocks
+4. add retry/regenerate/copy actions for AI cards
+5. start the local document library design from Stage 3
 
 This keeps the product focused while moving from prototype flow toward a credible first usable version.
-
