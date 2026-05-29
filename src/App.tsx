@@ -7,7 +7,6 @@ import {
   CornersOut,
   DownloadSimple,
   Export,
-  FilePpt,
   HighlighterCircle,
   MagnifyingGlass,
   Moon,
@@ -20,7 +19,6 @@ import {
   UploadSimple,
   X,
 } from "@phosphor-icons/react";
-import type PptxGenJS from "pptxgenjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEY = "margin-note-reader.hermes.v1";
@@ -190,7 +188,6 @@ export default function App() {
   const [studyWidth, setStudyWidth] = useState(DEFAULT_STUDY_WIDTH);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
-  const [pptBusy, setPptBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [flashBlockId, setFlashBlockId] = useState<string | null>(null);
   const [hasHydrated, setHasHydrated] = useState(false);
@@ -597,20 +594,6 @@ export default function App() {
     URL.revokeObjectURL(href);
   }, [blockIdLookup, currentAnnotations, currentDoc, parsed.blocks, parsed.title]);
 
-  const exportPresentation = useCallback(async () => {
-    if (!currentDoc || !markdown.trim()) return;
-    setPptBusy(true);
-    try {
-      await exportMarkdownAsPptx({
-        blocks: parsed.blocks,
-        markdown,
-        title: currentDoc.title,
-      });
-    } finally {
-      setPptBusy(false);
-    }
-  }, [currentDoc, markdown, parsed.blocks]);
-
   const downloadCurrentHtml = useCallback(() => {
     if (!currentDoc || !currentDocFile) return;
     const importedDoc = importedDocs.find((doc) => doc.file === currentDocFile);
@@ -1013,16 +996,6 @@ export default function App() {
             onClick={exportNotes}
           >
             <Export size={16} />
-          </button>
-          <button
-            className="topbar-text-button"
-            disabled={!currentDoc || pptBusy || isEditingSource}
-            type="button"
-            title="按金山云方案风格导出当前文档为 PPTX"
-            onClick={() => void exportPresentation()}
-          >
-            <FilePpt size={15} />
-            {pptBusy ? "生成中..." : "导出 PPT"}
           </button>
           <button
             className="topbar-text-button"
@@ -3149,248 +3122,6 @@ function extractTitleFromMarkdown(markdown: string, fallbackName: string) {
 
 function normalizeListMarker(marker: string) {
   return marker.replace(/[.)]$/, ".");
-}
-
-interface PptExportInput {
-  blocks: DocBlock[];
-  markdown: string;
-  title: string;
-}
-
-interface PptSection {
-  title: string;
-  chunks: PptChunk[];
-}
-
-type PptChunk =
-  | { kind: "text"; text: string; tone?: "quote" | "code" | "table" }
-  | { kind: "image"; alt: string; src: string };
-
-const KSC_PPT = {
-  accent: "E6002D",
-  accent2: "F76727",
-  dark: "202630",
-  dark2: "171616",
-  muted: "6E747A",
-  pale: "E7E6E6",
-  panel: "F8F9FA",
-  white: "FFFFFF",
-};
-
-async function exportMarkdownAsPptx({ blocks, markdown, title }: PptExportInput) {
-  const { default: PptxGen } = await import("pptxgenjs");
-  const pptx = new PptxGen();
-  pptx.layout = "LAYOUT_WIDE";
-  pptx.author = "Margin Note Reader";
-  pptx.company = "Margin Note Reader";
-  pptx.subject = "Markdown / HTML 转 PPT";
-  pptx.title = title;
-  pptx.theme = {
-    bodyFontFace: "Microsoft YaHei",
-    headFontFace: "Microsoft YaHei",
-  };
-
-  const sections = createPptSections(blocks, title);
-  addPptCover(pptx, title, markdown);
-  addPptAgenda(pptx, sections);
-
-  sections.forEach((section, sectionIndex) => {
-    addPptSectionSlide(pptx, section.title, sectionIndex + 1);
-    const textBatch: PptChunk[] = [];
-    let batchChars = 0;
-
-    const flush = () => {
-      if (!textBatch.length) return;
-      addPptContentSlide(pptx, section.title, textBatch, sectionIndex + 1);
-      textBatch.length = 0;
-      batchChars = 0;
-    };
-
-    section.chunks.forEach((chunk) => {
-      if (chunk.kind === "image") {
-        flush();
-        addPptImageSlide(pptx, section.title, chunk, sectionIndex + 1);
-        return;
-      }
-      const nextLength = chunk.text.length;
-      if (textBatch.length >= 6 || batchChars + nextLength > 560) flush();
-      textBatch.push(chunk);
-      batchChars += nextLength;
-    });
-    flush();
-  });
-
-  const fileName = `${slugify(title) || "margin-note-reader"}.pptx`;
-  await pptx.writeFile({ fileName, compression: true });
-}
-
-function createPptSections(blocks: DocBlock[], fallbackTitle: string) {
-  const sections: PptSection[] = [];
-  let current: PptSection = { title: fallbackTitle || "未命名文档", chunks: [] };
-
-  const pushCurrent = () => {
-    if (current.chunks.length) sections.push(current);
-  };
-
-  for (const block of blocks) {
-    if (block.type === "heading" && (block.level ?? 1) <= 2) {
-      pushCurrent();
-      current = { title: stripInline(block.text || block.markdown), chunks: [] };
-      continue;
-    }
-
-    const image = extractMarkdownImage(block.markdown);
-    if (image) {
-      current.chunks.push({ kind: "image", ...image });
-      continue;
-    }
-
-    if (block.type === "list" && block.items?.length) {
-      block.items.forEach((item) => {
-        const text = cleanPptText(item.text);
-        if (text) current.chunks.push({ kind: "text", text });
-      });
-      continue;
-    }
-
-    if (block.type === "table") {
-      const rows = [block.header ?? [], ...(block.rows ?? [])]
-        .filter((row) => row.some(Boolean))
-        .map((row) => row.join(" / "));
-      rows.slice(0, 6).forEach((row) => current.chunks.push({ kind: "text", text: cleanPptText(row), tone: "table" }));
-      continue;
-    }
-
-    const text = cleanPptText(block.text);
-    if (!text || block.type === "rule") continue;
-    current.chunks.push({
-      kind: "text",
-      text,
-      tone: block.type === "quote" ? "quote" : block.type === "code" ? "code" : undefined,
-    });
-  }
-
-  pushCurrent();
-  return sections.filter((section) => section.title || section.chunks.length).slice(0, 36);
-}
-
-function addPptCover(pptx: PptxGenJS, title: string, markdown: string) {
-  const slide = pptx.addSlide();
-  slide.background = { color: KSC_PPT.dark };
-  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 7.5, fill: { color: KSC_PPT.dark }, line: { color: KSC_PPT.dark } });
-  slide.addShape(pptx.ShapeType.rect, { x: 0.72, y: 1.06, w: 0.1, h: 1.78, fill: { color: KSC_PPT.accent }, line: { color: KSC_PPT.accent } });
-  slide.addText("Margin Note Reader", { x: 0.88, y: 0.62, w: 3.8, h: 0.24, fontFace: "Arial", fontSize: 8.5, color: KSC_PPT.pale, bold: true, charSpacing: 1.2 });
-  slide.addText(truncatePptText(title, 54), { x: 0.88, y: 1.1, w: 9.8, h: 1.25, fontFace: "Microsoft YaHei", fontSize: 33, bold: true, color: KSC_PPT.white, breakLine: false, fit: "shrink" });
-  slide.addText("Markdown / HTML 自动转 PPT", { x: 0.9, y: 2.65, w: 6.8, h: 0.4, fontFace: "Microsoft YaHei", fontSize: 15, color: KSC_PPT.accent2, bold: true });
-  slide.addText(`共 ${Math.max(1, Math.round(markdown.length / 800))} 分钟阅读量 · ${new Date().toLocaleDateString("zh-CN")}`, { x: 0.9, y: 6.46, w: 7.4, h: 0.28, fontFace: "Microsoft YaHei", fontSize: 9.5, color: "C6CBD1" });
-  slide.addShape(pptx.ShapeType.rect, { x: 10.52, y: 0, w: 2.82, h: 7.5, fill: { color: KSC_PPT.accent, transparency: 4 }, line: { color: KSC_PPT.accent } });
-  slide.addShape(pptx.ShapeType.rect, { x: 10.03, y: 0.7, w: 2.36, h: 4.6, fill: { color: KSC_PPT.white, transparency: 86 }, line: { color: KSC_PPT.white, transparency: 100 } });
-}
-
-function addPptAgenda(pptx: PptxGenJS, sections: PptSection[]) {
-  const slide = pptx.addSlide();
-  addPptChrome(pptx, slide, "目录", "AGENDA");
-  if (!sections.length) {
-    slide.addText("当前文档还没有可转换的正文内容。", { x: 0.92, y: 1.6, w: 8.6, h: 0.42, fontFace: "Microsoft YaHei", fontSize: 16, color: KSC_PPT.muted });
-    return;
-  }
-  sections.slice(0, 8).forEach((section, index) => {
-    const y = 1.45 + index * 0.58;
-    slide.addText(String(index + 1).padStart(2, "0"), { x: 0.9, y, w: 0.54, h: 0.24, fontFace: "Arial", fontSize: 12, color: KSC_PPT.accent, bold: true });
-    slide.addText(truncatePptText(section.title, 34), { x: 1.55, y: y - 0.04, w: 9.8, h: 0.34, fontFace: "Microsoft YaHei", fontSize: 15, color: KSC_PPT.dark, bold: true });
-    slide.addShape(pptx.ShapeType.line, { x: 1.55, y: y + 0.42, w: 10.7, h: 0, line: { color: KSC_PPT.pale, width: 0.8 } });
-  });
-}
-
-function addPptSectionSlide(pptx: PptxGenJS, title: string, index: number) {
-  const slide = pptx.addSlide();
-  slide.background = { color: KSC_PPT.dark };
-  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 7.5, fill: { color: KSC_PPT.dark }, line: { color: KSC_PPT.dark } });
-  slide.addText(String(index).padStart(2, "0"), { x: 0.86, y: 1.08, w: 1.38, h: 0.72, fontFace: "Arial", fontSize: 31, bold: true, color: KSC_PPT.accent });
-  slide.addShape(pptx.ShapeType.line, { x: 0.9, y: 2.06, w: 2.25, h: 0, line: { color: KSC_PPT.accent, width: 3 } });
-  slide.addText(truncatePptText(title, 46), { x: 0.88, y: 2.42, w: 10.4, h: 1.0, fontFace: "Microsoft YaHei", fontSize: 29, bold: true, color: KSC_PPT.white, fit: "shrink" });
-  slide.addText("章节概要", { x: 0.94, y: 6.44, w: 2.2, h: 0.22, fontFace: "Microsoft YaHei", fontSize: 9.5, color: "CED4DA" });
-}
-
-function addPptContentSlide(pptx: PptxGenJS, title: string, chunks: PptChunk[], sectionIndex: number) {
-  const slide = pptx.addSlide();
-  addPptChrome(pptx, slide, title, String(sectionIndex).padStart(2, "0"));
-  slide.addShape(pptx.ShapeType.rect, { x: 0.82, y: 1.42, w: 11.72, h: 4.95, fill: { color: KSC_PPT.panel }, line: { color: KSC_PPT.pale, transparency: 8 } });
-  chunks.forEach((chunk, index) => {
-    if (chunk.kind !== "text") return;
-    const y = 1.74 + index * 0.72;
-    const isQuote = chunk.tone === "quote";
-    const isCode = chunk.tone === "code";
-    slide.addShape(pptx.ShapeType.rect, { x: 1.12, y: y + 0.09, w: 0.12, h: 0.12, fill: { color: isQuote ? KSC_PPT.accent2 : KSC_PPT.accent }, line: { color: isQuote ? KSC_PPT.accent2 : KSC_PPT.accent } });
-    slide.addText(truncatePptText(chunk.text, isCode ? 86 : 74), {
-      x: 1.42,
-      y: y - 0.02,
-      w: 10.3,
-      h: 0.47,
-      fontFace: isCode ? "JetBrains Mono" : "Microsoft YaHei",
-      fontSize: isCode ? 11 : 14,
-      color: isQuote ? KSC_PPT.muted : KSC_PPT.dark,
-      breakLine: false,
-      fit: "shrink",
-    });
-  });
-  addPptFooter(pptx, slide);
-}
-
-function addPptImageSlide(pptx: PptxGenJS, title: string, chunk: Extract<PptChunk, { kind: "image" }>, sectionIndex: number) {
-  const slide = pptx.addSlide();
-  addPptChrome(pptx, slide, title, String(sectionIndex).padStart(2, "0"));
-  slide.addShape(pptx.ShapeType.rect, { x: 0.9, y: 1.38, w: 11.5, h: 4.85, fill: { color: KSC_PPT.white }, line: { color: KSC_PPT.pale } });
-  if (chunk.src.startsWith("data:image/")) {
-    try {
-      slide.addImage({ data: chunk.src, x: 1.24, y: 1.62, w: 10.82, h: 4.25, altText: chunk.alt || "文档图片" });
-    } catch {
-      addPptImagePlaceholder(pptx, slide, chunk.alt);
-    }
-  } else {
-    addPptImagePlaceholder(pptx, slide, chunk.alt || chunk.src);
-  }
-  if (chunk.alt) {
-    slide.addText(truncatePptText(chunk.alt, 72), { x: 1.16, y: 6.02, w: 10.8, h: 0.24, fontFace: "Microsoft YaHei", fontSize: 9, color: KSC_PPT.muted, align: "center" });
-  }
-  addPptFooter(pptx, slide);
-}
-
-function addPptImagePlaceholder(pptx: PptxGenJS, slide: PptxGenJS.Slide, label: string) {
-  slide.addShape(pptx.ShapeType.rect, { x: 1.55, y: 2.15, w: 9.95, h: 2.72, fill: { color: "FFF4F4" }, line: { color: KSC_PPT.accent, transparency: 35 } });
-  slide.addText(`图片资源未内嵌\n${truncatePptText(label, 80)}`, { x: 1.82, y: 2.92, w: 9.4, h: 0.78, fontFace: "Microsoft YaHei", fontSize: 14, color: KSC_PPT.accent, align: "center", breakLine: false });
-}
-
-function addPptChrome(pptx: PptxGenJS, slide: PptxGenJS.Slide, title: string, marker: string) {
-  slide.background = { color: KSC_PPT.white };
-  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 0.18, fill: { color: KSC_PPT.accent }, line: { color: KSC_PPT.accent } });
-  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0.18, w: 13.333, h: 0.18, fill: { color: KSC_PPT.dark }, line: { color: KSC_PPT.dark } });
-  slide.addText(marker, { x: 0.82, y: 0.55, w: 0.75, h: 0.28, fontFace: "Arial", fontSize: 11, color: KSC_PPT.accent, bold: true });
-  slide.addText(truncatePptText(title, 42), { x: 1.58, y: 0.46, w: 9.5, h: 0.46, fontFace: "Microsoft YaHei", fontSize: 21, bold: true, color: KSC_PPT.dark, fit: "shrink" });
-  slide.addShape(pptx.ShapeType.line, { x: 0.84, y: 1.15, w: 11.72, h: 0, line: { color: KSC_PPT.pale, width: 0.8 } });
-}
-
-function addPptFooter(pptx: PptxGenJS, slide: PptxGenJS.Slide) {
-  slide.addShape(pptx.ShapeType.line, { x: 0.84, y: 6.82, w: 11.72, h: 0, line: { color: KSC_PPT.pale, width: 0.6 } });
-  slide.addText("Margin Note Reader · PPTX Export", { x: 0.86, y: 6.96, w: 4.2, h: 0.18, fontFace: "Arial", fontSize: 7.5, color: KSC_PPT.muted });
-}
-
-function extractMarkdownImage(value: string) {
-  const match = value.match(/!\[([^\]]*)\]\(([^)]+)\)/);
-  if (!match) return null;
-  return { alt: match[1], src: match[2].trim() };
-}
-
-function cleanPptText(value: string) {
-  return stripInline(value)
-    .replace(/\s+/g, " ")
-    .replace(/[•●▪]/g, "")
-    .trim();
-}
-
-function truncatePptText(value: string, maxLength: number) {
-  const text = cleanPptText(value);
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
 function annotationLabel(kind: AnnotationKind) {

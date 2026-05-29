@@ -158,7 +158,6 @@ Delivered:
 - import from local HTML files and convert readable structure to Markdown
 - import supported documents from a local folder selection
 - preserve imported images as rendered Markdown image blocks
-- export the current Markdown / HTML-derived document to PPTX with a Kingsoft Cloud-inspired enterprise deck style
 
 Planned work:
 
