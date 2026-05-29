@@ -5,6 +5,7 @@ import {
   Check,
   CornersIn,
   CornersOut,
+  DownloadSimple,
   Export,
   FilePpt,
   HighlighterCircle,
@@ -33,6 +34,10 @@ const MIN_READER_FONT_SIZE = 19;
 const DEFAULT_STUDY_WIDTH = 430;
 const MIN_STUDY_WIDTH = 340;
 const MAX_STUDY_WIDTH = 680;
+const TEXT_IMPORT_SIZE_LIMIT = 8_000_000;
+const BINARY_IMPORT_SIZE_LIMIT = 30_000_000;
+const MAX_PDF_PAGES = 180;
+const MAX_PPT_SLIDES = 220;
 const EMPTY_DOC_TEMPLATE = "# 未命名文档\n\n在这里开始记录、阅读或整理资料。\n";
 
 const DOCS: ReaderDoc[] = [];
@@ -50,7 +55,15 @@ type AnnotationKind =
   | "citation"
   | "revisit";
 type AiMode = "explain" | "summarize" | "question" | "term";
-type SourceType = "blank" | "markdown-file" | "folder-file" | "html-file";
+type SourceType =
+  | "blank"
+  | "markdown-file"
+  | "folder-file"
+  | "html-file"
+  | "pdf-file"
+  | "ppt-file"
+  | "cloud-doc"
+  | "url";
 type Theme = "light" | "dark";
 
 const NOTE_KIND_OPTIONS: Array<{ kind: AnnotationKind; label: string }> = [
@@ -69,6 +82,7 @@ interface ReaderDoc {
   sourceType: SourceType;
   originalName?: string;
   relativePath?: string;
+  sourceUrl?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -77,6 +91,10 @@ interface ImportedDoc extends ReaderDoc {
   createdAt: string;
   updatedAt: string;
   markdown: string;
+  originalHtml?: string;
+  originalDataUrl?: string;
+  originalMimeType?: string;
+  originalSize?: number;
 }
 
 interface DocBlock {
@@ -150,9 +168,8 @@ interface PersistedState {
 
 export default function App() {
   const articleRef = useRef<HTMLElement | null>(null);
-  const markdownInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
-  const htmlInputRef = useRef<HTMLInputElement | null>(null);
   const hasAppliedHashRef = useRef(false);
   const [currentDocFile, setCurrentDocFile] = useState<string | null>(null);
   const [markdownByFile, setMarkdownByFile] = useState<Record<string, string>>({});
@@ -181,6 +198,10 @@ export default function App() {
   const [sourceDraft, setSourceDraft] = useState("");
   const [sourceStatus, setSourceStatus] = useState("");
   const [isImmersive, setIsImmersive] = useState(false);
+  const [urlDraft, setUrlDraft] = useState("");
+  const [urlBusy, setUrlBusy] = useState(false);
+  const [translationBusy, setTranslationBusy] = useState(false);
+  const [translationError, setTranslationError] = useState("");
 
   const allDocs = useMemo<ReaderDoc[]>(() => [...DOCS, ...importedDocs], [importedDocs]);
   const currentDoc = currentDocFile ? allDocs.find((doc) => doc.file === currentDocFile) ?? null : null;
@@ -212,6 +233,10 @@ export default function App() {
   const searchTerms = useMemo(
     () => query.trim().split(/\s+/).filter(Boolean).slice(0, 5),
     [query],
+  );
+  const canTranslateCurrentDoc = useMemo(
+    () => currentDoc?.sourceType === "url" && isMostlyEnglishMarkdown(markdown),
+    [currentDoc?.sourceType, markdown],
   );
   const matchingBlocks = useMemo(() => {
     const value = query.trim().toLowerCase();
@@ -360,6 +385,7 @@ export default function App() {
     setProgress(0);
     setIsEditingSource(false);
     setSourceStatus("");
+    setTranslationError("");
     articleRef.current?.scrollTo({ top: 0 });
   }, [currentDocFile]);
 
@@ -581,6 +607,21 @@ export default function App() {
     }
   }, [currentDoc, markdown, parsed.blocks]);
 
+  const downloadCurrentHtml = useCallback(() => {
+    if (!currentDoc || !currentDocFile) return;
+    const importedDoc = importedDocs.find((doc) => doc.file === currentDocFile);
+    const html = importedDoc?.originalHtml?.trim()
+      ? importedDoc.originalHtml
+      : markdownToHtmlDocument(markdown, currentDoc.title, currentDoc.sourceUrl);
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = `${slugify(currentDoc.title)}.html`;
+    a.click();
+    URL.revokeObjectURL(href);
+  }, [currentDoc, currentDocFile, importedDocs, markdown]);
+
   const onReaderScroll = useCallback(() => {
     const element = articleRef.current;
     if (!element) return;
@@ -615,6 +656,58 @@ export default function App() {
     setCurrentDocFile(docs[0]?.file ?? null);
   }, []);
 
+  const translateCurrentUrlDocument = useCallback(async () => {
+    if (!currentDoc || !currentDocFile || !canTranslateCurrentDoc) return;
+    setTranslationBusy(true);
+    setTranslationError("");
+    setSourceStatus("正在生成中文翻译...");
+    try {
+      const response = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: currentDoc.title,
+          markdown,
+          sourceUrl: currentDoc.sourceUrl,
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        markdown?: string;
+        title?: string;
+      };
+      if (!response.ok || !data.markdown?.trim()) {
+        throw new Error(data.error || `翻译失败：HTTP ${response.status}`);
+      }
+
+      const now = new Date().toISOString();
+      const translatedTitle = data.title?.trim() || `${currentDoc.title} 中文翻译`;
+      const doc: ImportedDoc = {
+        file: `local:${Date.now()}-translation-${slugify(translatedTitle)}`,
+        title: translatedTitle,
+        group: currentDoc.group || "网页资料",
+        sourceType: "url",
+        originalName: `${currentDoc.originalName ?? currentDoc.title} 中文翻译`,
+        relativePath: currentDoc.relativePath,
+        sourceUrl: currentDoc.sourceUrl,
+        markdown: data.markdown.trim(),
+        createdAt: now,
+        updatedAt: now,
+      };
+      await saveDocsToLibrary([doc]);
+      setSourceStatus("已生成中文翻译");
+      window.setTimeout(() => {
+        setSourceStatus((current) => (current === "已生成中文翻译" ? "" : current));
+      }, 1800);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "翻译失败。";
+      setTranslationError(message);
+      setSourceStatus("");
+    } finally {
+      setTranslationBusy(false);
+    }
+  }, [canTranslateCurrentDoc, currentDoc, currentDocFile, markdown, saveDocsToLibrary]);
+
   const saveSourceEdit = useCallback(async () => {
     if (!currentDoc || !currentDocFile) return;
     const now = new Date().toISOString();
@@ -626,6 +719,11 @@ export default function App() {
       sourceType: previous?.sourceType ?? currentDoc.sourceType,
       originalName: previous?.originalName ?? currentDoc.originalName,
       relativePath: previous?.relativePath ?? currentDoc.relativePath,
+      sourceUrl: previous?.sourceUrl ?? currentDoc.sourceUrl,
+      originalHtml: previous?.originalHtml,
+      originalDataUrl: previous?.originalDataUrl,
+      originalMimeType: previous?.originalMimeType,
+      originalSize: previous?.originalSize,
       markdown: sourceDraft,
       createdAt: previous?.createdAt ?? currentDoc.createdAt ?? now,
       updatedAt: now,
@@ -659,19 +757,14 @@ export default function App() {
     await saveDocsToLibrary([doc]);
   }, [saveDocsToLibrary]);
 
-  const importDocuments = useCallback(async (files: FileList | null, mode: "file" | "folder" | "html") => {
+  const importDocuments = useCallback(async (files: FileList | null, mode: "file" | "folder") => {
     if (!files?.length) return;
     setImportError("");
     const allFiles = Array.from(files);
     const assetMap = await createImageAssetMap(allFiles.filter(isImageFile));
-    const accepted = allFiles.filter((file) =>
-      mode === "html"
-        ? /\.(html|htm)$/i.test(file.name) || file.type === "text/html"
-        : /\.(md|markdown|txt|html|htm)$/i.test(file.name) ||
-          ["text/markdown", "text/plain", "text/html"].includes(file.type),
-    );
+    const accepted = allFiles.filter(isSupportedImportFile);
     if (!accepted.length) {
-      setImportError(mode === "html" ? "请选择 HTML 文件。" : "请选择 Markdown、纯文本或 HTML 文件。");
+      setImportError("请选择 Markdown、HTML、PDF、PPT 或云文档快捷文件。");
       return;
     }
 
@@ -679,17 +772,44 @@ export default function App() {
       const now = new Date().toISOString();
       const imported = await Promise.all(
         accepted.map(async (file, index) => {
-          if (file.size > 8_000_000) {
-            throw new Error(`${file.name} 超过 8MB，当前浏览器本地文档库暂不适合导入这么大的文件。`);
+          const sizeLimit = isPdfFile(file) || isPresentationFile(file)
+            ? BINARY_IMPORT_SIZE_LIMIT
+            : TEXT_IMPORT_SIZE_LIMIT;
+          if (file.size > sizeLimit) {
+            throw new Error(
+              `${file.name} 超过 ${formatFileSize(sizeLimit)}，当前浏览器本地文档库暂不适合导入这么大的文件。`,
+            );
           }
-          const raw = await file.text();
           const isHtml = /\.(html|htm)$/i.test(file.name) || file.type === "text/html";
+          const isPdf = isPdfFile(file);
+          const isPresentation = isPresentationFile(file);
+          const isCloudShortcut = isCloudShortcutFile(file);
+          const raw = isPdf || isPresentation ? "" : await file.text();
           const relativePath = getRelativePath(file);
+          const cloudUrl = isCloudShortcut ? extractCloudShortcutUrl(raw) : "";
           const markdownValue = isHtml
             ? htmlToMarkdown(raw, file.name, assetMap, relativePath)
-            : rewriteMarkdownImageSources(raw, assetMap, relativePath);
+            : isPdf
+              ? await extractPdfToMarkdown(file)
+              : isPresentation
+                ? await extractPresentationToMarkdown(file)
+                : isCloudShortcut
+                  ? fileResourceToMarkdown(file, cloudUrl)
+              : rewriteMarkdownImageSources(raw, assetMap, relativePath);
           const title = extractTitleFromMarkdown(markdownValue, file.name);
-          const sourceType: SourceType = isHtml ? "html-file" : mode === "folder" ? "folder-file" : "markdown-file";
+          const sourceType: SourceType = isHtml
+            ? "html-file"
+            : isPdf
+              ? "pdf-file"
+              : isPresentation
+                ? "ppt-file"
+                : isCloudShortcut
+                  ? "cloud-doc"
+                  : mode === "folder"
+                    ? "folder-file"
+                    : "markdown-file";
+          const shouldStoreOriginalFile = isPdf || isPresentation;
+          const originalDataUrl = shouldStoreOriginalFile ? await fileToDataUrl(file) : undefined;
           return {
             file: `local:${Date.now()}-${index}-${slugify(file.name)}`,
             title,
@@ -697,6 +817,11 @@ export default function App() {
             sourceType,
             originalName: file.name,
             relativePath,
+            sourceUrl: cloudUrl || undefined,
+            originalHtml: isHtml ? raw : undefined,
+            originalDataUrl,
+            originalMimeType: shouldStoreOriginalFile ? file.type || getFallbackMimeType(file.name) : undefined,
+            originalSize: shouldStoreOriginalFile ? file.size : undefined,
             markdown: markdownValue,
             createdAt: now,
             updatedAt: now,
@@ -708,6 +833,52 @@ export default function App() {
       setImportError(error instanceof Error ? error.message : "导入失败。");
     }
   }, [saveDocsToLibrary]);
+
+  const importUrlDocument = useCallback(async () => {
+    const requestedUrl = urlDraft.trim();
+    if (!requestedUrl) return;
+    setImportError("");
+    setUrlBusy(true);
+    try {
+      const response = await fetch("/api/fetch-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: requestedUrl }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        finalUrl?: string;
+        html?: string;
+      };
+      if (!response.ok || !data.html) {
+        throw new Error(data.error || `网页读取失败：HTTP ${response.status}`);
+      }
+      const finalUrl = data.finalUrl || normalizeUserUrl(requestedUrl);
+      const originalHtml = addBaseHrefToHtml(data.html, finalUrl);
+      const markdownValue = htmlToMarkdown(originalHtml, finalUrl, new Map(), finalUrl, finalUrl);
+      const now = new Date().toISOString();
+      const title = extractTitleFromMarkdown(markdownValue, readableUrlName(finalUrl));
+      const doc: ImportedDoc = {
+        file: `local:${Date.now()}-url-${slugify(title)}`,
+        title,
+        group: "网页资料",
+        sourceType: "url",
+        originalName: readableUrlName(finalUrl),
+        relativePath: finalUrl,
+        sourceUrl: finalUrl,
+        originalHtml,
+        markdown: markdownValue,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await saveDocsToLibrary([doc]);
+      setUrlDraft("");
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "URL 导入失败。");
+    } finally {
+      setUrlBusy(false);
+    }
+  }, [saveDocsToLibrary, urlDraft]);
 
   const deleteImportedDocument = useCallback(async (docFile: string) => {
     const doc = importedDocs.find((item) => item.file === docFile);
@@ -837,6 +1008,28 @@ export default function App() {
             <FilePpt size={15} />
             {pptBusy ? "生成中..." : "导出 PPT"}
           </button>
+          <button
+            className="topbar-text-button"
+            disabled={!currentDoc || isEditingSource}
+            type="button"
+            title="下载当前文档为 HTML"
+            onClick={downloadCurrentHtml}
+          >
+            <DownloadSimple size={15} />
+            下载 HTML
+          </button>
+          {canTranslateCurrentDoc ? (
+            <button
+              className="topbar-text-button"
+              disabled={translationBusy || isEditingSource}
+              type="button"
+              title="在线翻译当前英文 URL 文档为中文"
+              onClick={() => void translateCurrentUrlDocument()}
+            >
+              <Sparkle size={15} />
+              {translationBusy ? "翻译中..." : "在线翻译"}
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -850,24 +1043,27 @@ export default function App() {
               <Plus size={15} />
               新建空白文档
             </button>
-            <button type="button" onClick={() => markdownInputRef.current?.click()}>
+            <button type="button" onClick={() => fileInputRef.current?.click()}>
               <UploadSimple size={15} />
-              打开 Markdown
+              打开文件
             </button>
             <button type="button" onClick={() => folderInputRef.current?.click()}>
               <UploadSimple size={15} />
               打开文件夹
             </button>
-            <button type="button" onClick={() => htmlInputRef.current?.click()}>
-              <UploadSimple size={15} />
-              打开 HTML
-            </button>
+            <UrlImportForm
+              value={urlDraft}
+              busy={urlBusy}
+              compact
+              onChange={setUrlDraft}
+              onSubmit={() => void importUrlDocument()}
+            />
             <input
-              ref={markdownInputRef}
+              ref={fileInputRef}
               hidden
               multiple
               type="file"
-              accept=".md,.markdown,.txt,text/markdown,text/plain"
+              accept=".md,.markdown,.txt,.html,.htm,.pdf,.ppt,.pptx,.url,.webloc,text/markdown,text/plain,text/html,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
               onChange={(event) => {
                 void importDocuments(event.currentTarget.files, "file");
                 event.currentTarget.value = "";
@@ -878,21 +1074,10 @@ export default function App() {
               hidden
               multiple
               type="file"
-              accept=".md,.markdown,.txt,.html,.htm,text/markdown,text/plain,text/html"
+              accept=".md,.markdown,.txt,.html,.htm,.pdf,.ppt,.pptx,.url,.webloc,text/markdown,text/plain,text/html,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
               {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
               onChange={(event) => {
                 void importDocuments(event.currentTarget.files, "folder");
-                event.currentTarget.value = "";
-              }}
-            />
-            <input
-              ref={htmlInputRef}
-              hidden
-              multiple
-              type="file"
-              accept=".html,.htm,text/html"
-              onChange={(event) => {
-                void importDocuments(event.currentTarget.files, "html");
                 event.currentTarget.value = "";
               }}
             />
@@ -927,7 +1112,7 @@ export default function App() {
               ))
             ) : (
               <div className="rail-empty">
-                还没有本地文档。新建一篇空白文档，或打开 Markdown / HTML 文件开始。
+                还没有本地文档。新建一篇空白文档，或打开文件开始。
               </div>
             )}
           </nav>
@@ -971,7 +1156,19 @@ export default function App() {
                     <span>{parsed.blocks.length} 个阅读块</span>
                     <span>{sourceTypeLabel(currentDoc.sourceType)}</span>
                     {sourceStatus ? <span>{sourceStatus}</span> : null}
+                    {translationError ? <span className="doc-meta-error">{translationError}</span> : null}
                     {query.trim() ? <span>{matchingBlocks} 个匹配块</span> : null}
+                    {canTranslateCurrentDoc ? (
+                      <button
+                        className="doc-meta-action"
+                        disabled={translationBusy}
+                        type="button"
+                        onClick={() => void translateCurrentUrlDocument()}
+                      >
+                        <Sparkle size={14} />
+                        {translationBusy ? "翻译中..." : "在线翻译"}
+                      </button>
+                    ) : null}
                   </div>
                   {parsed.blocks.map((block) => (
                     <MarkdownBlock
@@ -993,10 +1190,13 @@ export default function App() {
         ) : (
           <StartWorkspace
             importedDocs={importedDocs}
+            urlDraft={urlDraft}
+            urlBusy={urlBusy}
             onCreateBlank={() => void createBlankDocument()}
-            onOpenMarkdown={() => markdownInputRef.current?.click()}
+            onOpenFile={() => fileInputRef.current?.click()}
             onOpenFolder={() => folderInputRef.current?.click()}
-            onOpenHtml={() => htmlInputRef.current?.click()}
+            onUrlDraftChange={setUrlDraft}
+            onOpenUrl={() => void importUrlDocument()}
             onSelectDoc={setCurrentDocFile}
             onDeleteDoc={(docFile) => void deleteImportedDocument(docFile)}
           />
@@ -1220,18 +1420,24 @@ function SourceEditor({
 
 function StartWorkspace({
   importedDocs,
+  urlBusy,
+  urlDraft,
   onCreateBlank,
+  onOpenFile,
   onOpenFolder,
-  onOpenHtml,
-  onOpenMarkdown,
+  onOpenUrl,
+  onUrlDraftChange,
   onSelectDoc,
   onDeleteDoc,
 }: {
   importedDocs: ImportedDoc[];
+  urlBusy: boolean;
+  urlDraft: string;
   onCreateBlank: () => void;
+  onOpenFile: () => void;
   onOpenFolder: () => void;
-  onOpenHtml: () => void;
-  onOpenMarkdown: () => void;
+  onOpenUrl: () => void;
+  onUrlDraftChange: (value: string) => void;
   onSelectDoc: (docFile: string) => void;
   onDeleteDoc: (docFile: string) => void;
 }) {
@@ -1244,8 +1450,13 @@ function StartWorkspace({
           <div className="section-kicker">本地阅读工作区</div>
           <h1>从空白文档、文件夹或网页资料开始。</h1>
           <p>
-            打开 Markdown、纯文本或 HTML 文件后，文档会保存到浏览器本地文档库；你可以继续做批注、提问、沉淀笔记。
+            打开 Markdown、HTML、PDF、PPT、云文档或网页 URL 后，文档会保存到浏览器本地文档库；你可以继续做批注、提问、沉淀笔记。
           </p>
+        </div>
+
+        <div className="start-local-note">
+          <strong>本地优先</strong>
+          <span>导入文档、笔记、概念卡和 AI 答案都保存在当前浏览器。</span>
         </div>
 
         <div className="start-actions" aria-label="开始">
@@ -1253,18 +1464,27 @@ function StartWorkspace({
             <strong>新建空白文档</strong>
             <span>从一份可编辑的 Markdown 草稿开始</span>
           </button>
-          <button type="button" onClick={onOpenMarkdown}>
-            <strong>打开 Markdown</strong>
-            <span>支持 .md、.markdown、.txt</span>
+          <button type="button" onClick={onOpenFile}>
+            <strong>打开文件</strong>
+            <span>支持 Markdown、HTML、PDF、PPT、云文档</span>
           </button>
           <button type="button" onClick={onOpenFolder}>
             <strong>打开文件夹</strong>
             <span>批量导入文件夹里的文档资料</span>
           </button>
-          <button type="button" onClick={onOpenHtml}>
-            <strong>打开 HTML</strong>
-            <span>提取正文并转换为 Markdown 阅读</span>
-          </button>
+        </div>
+
+        <div className="start-url-import">
+          <div>
+            <div className="section-kicker">网页导入</div>
+            <h2>打开一个 URL 到当前工作台</h2>
+          </div>
+          <UrlImportForm
+            value={urlDraft}
+            busy={urlBusy}
+            onChange={onUrlDraftChange}
+            onSubmit={onOpenUrl}
+          />
         </div>
 
         <div className="start-lower">
@@ -1302,6 +1522,42 @@ function StartWorkspace({
         </div>
       </div>
     </section>
+  );
+}
+
+function UrlImportForm({
+  busy,
+  compact,
+  onChange,
+  onSubmit,
+  value,
+}: {
+  busy: boolean;
+  compact?: boolean;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  value: string;
+}) {
+  return (
+    <form
+      className={compact ? "url-import is-compact" : "url-import"}
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+    >
+      <input
+        type="text"
+        inputMode="url"
+        value={value}
+        disabled={busy}
+        placeholder={compact ? "输入 URL" : "https://example.com/article"}
+        onChange={(event) => onChange(event.currentTarget.value)}
+      />
+      <button type="submit" disabled={busy || !value.trim()}>
+        {busy ? "读取中..." : "打开 URL"}
+      </button>
+    </form>
   );
 }
 
@@ -2038,11 +2294,56 @@ function parseTableRow(value: string) {
 function sourceTypeLabel(sourceType: SourceType) {
   const labels: Record<SourceType, string> = {
     blank: "空白文档",
+    "cloud-doc": "云文档",
     "folder-file": "文件夹导入",
     "html-file": "HTML",
     "markdown-file": "Markdown",
+    "pdf-file": "PDF",
+    "ppt-file": "PPT",
+    url: "URL",
   };
   return labels[sourceType];
+}
+
+function isMostlyEnglishMarkdown(markdown: string) {
+  const text = stripMarkdownForLanguageDetection(markdown).slice(0, 20000);
+  if (text.length < 80) return false;
+
+  let latinLetters = 0;
+  let cjkLetters = 0;
+  let otherLetters = 0;
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) {
+      latinLetters += 1;
+    } else if (isCjkCodePoint(code)) {
+      cjkLetters += 1;
+    } else if (/[A-Za-zÀ-ž]/.test(char)) {
+      otherLetters += 1;
+    }
+  }
+
+  const totalLetters = latinLetters + otherLetters + cjkLetters;
+  if (latinLetters < 70 || totalLetters < 70) return false;
+  return cjkLetters <= 3 && latinLetters / totalLetters >= 0.88;
+}
+
+function stripMarkdownForLanguageDetection(markdown: string) {
+  return stripInline(markdown.replace(/```[\s\S]*?```/g, " "))
+    .replace(/<[^>]+>/g, " ")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[#>*_\-[\]()`|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isCjkCodePoint(code: number) {
+  return (
+    (code >= 0x3400 && code <= 0x9fff) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0x3040 && code <= 0x30ff) ||
+    (code >= 0xac00 && code <= 0xd7af)
+  );
 }
 
 function sanitizeImportedDocs(value: unknown): ImportedDoc[] {
@@ -2088,6 +2389,7 @@ function htmlToMarkdown(
   fallbackName: string,
   assetMap = new Map<string, string>(),
   relativePath = fallbackName,
+  baseUrl = "",
 ) {
   const documentValue = new DOMParser().parseFromString(html, "text/html");
   const title = documentValue.querySelector("title")?.textContent?.trim() || fallbackName;
@@ -2115,21 +2417,23 @@ function htmlToMarkdown(
     }
     if (/^h[1-6]$/.test(tag)) {
       const level = Number(tag.slice(1));
-      lines.push(`${"#".repeat(level)} ${inlineHtmlToMarkdown(node, assetMap, relativePath)}`, "");
+      const headingText = inlineHtmlToMarkdown(node, assetMap, relativePath, baseUrl);
+      if (level === 1 && lines.length === 2 && stripInline(headingText) === stripInline(title)) return;
+      lines.push(`${"#".repeat(level)} ${headingText}`, "");
       return;
     }
     if (tag === "img") {
-      const image = imageElementToMarkdown(node, assetMap, relativePath);
+      const image = imageElementToMarkdown(node, assetMap, relativePath, baseUrl);
       if (image) lines.push(image, "");
       return;
     }
     if (tag === "p") {
-      const text = inlineHtmlToMarkdown(node, assetMap, relativePath);
+      const text = inlineHtmlToMarkdown(node, assetMap, relativePath, baseUrl);
       if (text) lines.push(text, "");
       return;
     }
     if (tag === "blockquote") {
-      const text = inlineHtmlToMarkdown(node, assetMap, relativePath);
+      const text = inlineHtmlToMarkdown(node, assetMap, relativePath, baseUrl);
       if (text) lines.push(`> ${text}`, "");
       return;
     }
@@ -2141,14 +2445,14 @@ function htmlToMarkdown(
       Array.from(node.children).forEach((child, index) => {
         if (child.tagName.toLowerCase() !== "li") return;
         const marker = tag === "ol" ? `${index + 1}.` : "-";
-        lines.push(`${marker} ${inlineHtmlToMarkdown(child, assetMap, relativePath)}`);
+        lines.push(`${marker} ${inlineHtmlToMarkdown(child, assetMap, relativePath, baseUrl)}`);
       });
       lines.push("");
       return;
     }
     if (tag === "table") {
       const rows = Array.from(node.querySelectorAll("tr")).map((row) =>
-        Array.from(row.children).map((cell) => inlineHtmlToMarkdown(cell, assetMap, relativePath)),
+        Array.from(row.children).map((cell) => inlineHtmlToMarkdown(cell, assetMap, relativePath, baseUrl)),
       );
       if (rows.length) {
         lines.push(`| ${rows[0].join(" | ")} |`);
@@ -2169,12 +2473,13 @@ function inlineHtmlToMarkdown(
   element: Element,
   assetMap = new Map<string, string>(),
   relativePath = "",
+  baseUrl = "",
 ): string {
   const walk = (node: Node): string => {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent?.replace(/\s+/g, " ") ?? "";
     if (!(node instanceof Element)) return "";
     const tag = node.tagName.toLowerCase();
-    if (tag === "img") return imageElementToMarkdown(node, assetMap, relativePath);
+    if (tag === "img") return imageElementToMarkdown(node, assetMap, relativePath, baseUrl);
     if (tag === "svg") return svgElementToMarkdown(node);
     const content = Array.from(node.childNodes).map(walk).join("").trim();
     if (!content) return "";
@@ -2183,7 +2488,8 @@ function inlineHtmlToMarkdown(
     if (tag === "code") return `\`${content}\``;
     if (tag === "a") {
       const href = node.getAttribute("href");
-      return href ? `[${content}](${href})` : content;
+      const safeHref = href ? resolveLinkHref(href, baseUrl) : "";
+      return safeHref ? `[${content}](${safeHref})` : content;
     }
     if (tag === "br") return "\n";
     return content;
@@ -2203,11 +2509,12 @@ function imageElementToMarkdown(
   element: Element,
   assetMap = new Map<string, string>(),
   relativePath = "",
+  baseUrl = "",
 ) {
   const src = element.getAttribute("src") || element.getAttribute("data-src") || "";
   if (!src) return "";
   const alt = element.getAttribute("alt") || element.getAttribute("title") || "图片";
-  return `![${escapeMarkdownAlt(alt)}](${resolveAssetSrc(src, assetMap, relativePath)})`;
+  return `![${escapeMarkdownAlt(alt)}](${resolveAssetSrc(src, assetMap, relativePath, baseUrl)})`;
 }
 
 function rewriteMarkdownImageSources(
@@ -2261,9 +2568,361 @@ function isImageFile(file: File) {
   return file.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(file.name);
 }
 
-function resolveAssetSrc(src: string, assetMap: Map<string, string>, relativePath: string) {
+function isSupportedImportFile(file: File) {
+  return (
+    isMarkdownLikeFile(file) ||
+    /\.(html|htm)$/i.test(file.name) ||
+    file.type === "text/html" ||
+    isPdfFile(file) ||
+    isPresentationFile(file) ||
+    isCloudShortcutFile(file)
+  );
+}
+
+function isMarkdownLikeFile(file: File) {
+  return (
+    /\.(md|markdown|txt)$/i.test(file.name) ||
+    ["text/markdown", "text/plain"].includes(file.type)
+  );
+}
+
+function isPdfFile(file: File) {
+  return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+}
+
+function isPresentationFile(file: File) {
+  return (
+    /\.(ppt|pptx)$/i.test(file.name) ||
+    file.type === "application/vnd.ms-powerpoint" ||
+    file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  );
+}
+
+function isCloudShortcutFile(file: File) {
+  return /\.(url|webloc)$/i.test(file.name) || file.type === "text/uri-list";
+}
+
+function fileResourceToMarkdown(file: File, cloudUrl = "") {
+  const title = file.name.replace(/\.(pdf|pptx?|url|webloc)$/i, "") || file.name;
+  if (cloudUrl) {
+    return [
+      `# ${title}`,
+      "",
+      "> 已导入云文档快捷方式。",
+      "",
+      `- 云文档地址：[${cloudUrl}](${cloudUrl})`,
+      `- 原始文件：${file.name}`,
+    ].join("\n");
+  }
+
+  const kind = isPdfFile(file) ? "PDF" : "PPT";
+  return [
+    `# ${title}`,
+    "",
+    `> 已导入 ${kind} 文件。`,
+    "",
+    `- 文件名：${file.name}`,
+    `- 文件大小：${formatFileSize(file.size)}`,
+    `- 文件类型：${kind}`,
+  ].join("\n");
+}
+
+async function extractPdfToMarkdown(file: File) {
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url).toString();
+
+  const title = file.name.replace(/\.pdf$/i, "") || file.name;
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    disableFontFace: true,
+    isEvalSupported: false,
+  } as Record<string, unknown>);
+  const pdf = await loadingTask.promise;
+  const pageCount = Math.min(pdf.numPages, MAX_PDF_PAGES);
+  const lines = [
+    `# ${title}`,
+    "",
+    `> 已从 PDF 提取正文。原文件：${file.name}；文件大小：${formatFileSize(file.size)}。`,
+    "",
+  ];
+
+  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const textContent = await page.getTextContent();
+    const pageMarkdown = pdfTextItemsToMarkdown(textContent.items);
+    if (!pageMarkdown) continue;
+    lines.push(`## 第 ${pageNumber} 页`, "", pageMarkdown, "");
+  }
+
+  if (pdf.numPages > pageCount) {
+    lines.push(`> 仅提取前 ${pageCount} 页；原 PDF 共 ${pdf.numPages} 页。`, "");
+  }
+
+  const markdown = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (markdown.includes("## 第 ")) return markdown;
+  return [
+    `# ${title}`,
+    "",
+    `> 已导入 PDF 文件，但没有提取到可复制文字。它可能是扫描件或图片型 PDF。`,
+    "",
+    `- 文件名：${file.name}`,
+    `- 文件大小：${formatFileSize(file.size)}`,
+    "- 文件类型：PDF",
+  ].join("\n");
+}
+
+function pdfTextItemsToMarkdown(items: unknown[]) {
+  const lines: string[] = [];
+  let currentLine = "";
+
+  const flush = () => {
+    const value = currentLine.replace(/\s+/g, " ").trim();
+    if (value) lines.push(value);
+    currentLine = "";
+  };
+
+  for (const rawItem of items) {
+    const item = rawItem as { str?: string; hasEOL?: boolean };
+    const text = item.str?.replace(/\s+/g, " ").trim() ?? "";
+    if (text) {
+      if (currentLine && !/[-/([{]$/.test(currentLine) && !/^[,.;:!?%)]/.test(text)) {
+        currentLine += " ";
+      }
+      currentLine += text;
+    }
+    if (item.hasEOL) flush();
+  }
+  flush();
+
+  return lines
+    .join("\n")
+    .replace(/-\n(?=[a-z])/g, "")
+    .replace(/\n{2,}/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function extractPresentationToMarkdown(file: File) {
+  return /\.pptx$/i.test(file.name)
+    ? extractPptxToMarkdown(file)
+    : extractLegacyPptToMarkdown(file);
+}
+
+async function extractPptxToMarkdown(file: File) {
+  const { default: JSZip } = await import("jszip");
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const slidePaths = Object.keys(zip.files)
+    .filter((path) => /^ppt\/slides\/slide\d+\.xml$/i.test(path))
+    .sort((a, b) => getSlideNumber(a) - getSlideNumber(b))
+    .slice(0, MAX_PPT_SLIDES);
+
+  const title = (await readPptxCoreTitle(zip)) || file.name.replace(/\.pptx$/i, "") || file.name;
+  const lines = [
+    `# ${title}`,
+    "",
+    `> 已从 PPTX 提取幻灯片文字。原文件：${file.name}；文件大小：${formatFileSize(file.size)}。`,
+    "",
+  ];
+
+  for (const slidePath of slidePaths) {
+    const slideNumber = getSlideNumber(slidePath);
+    const xml = await zip.file(slidePath)?.async("text");
+    if (!xml) continue;
+    const paragraphs = extractParagraphsFromOfficeXml(xml);
+    if (!paragraphs.length) continue;
+    lines.push(`## 第 ${slideNumber} 页`, "");
+    for (const paragraph of paragraphs) lines.push(paragraph, "");
+  }
+
+  const allSlideCount = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/i.test(path)).length;
+  if (allSlideCount > slidePaths.length) {
+    lines.push(`> 仅提取前 ${slidePaths.length} 页；原 PPTX 共 ${allSlideCount} 页。`, "");
+  }
+
+  const markdown = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (markdown.includes("## 第 ")) return markdown;
+  return [
+    `# ${title}`,
+    "",
+    "> 已导入 PPTX 文件，但没有提取到可读文字。",
+    "",
+    `- 文件名：${file.name}`,
+    `- 文件大小：${formatFileSize(file.size)}`,
+    "- 文件类型：PPTX",
+  ].join("\n");
+}
+
+async function readPptxCoreTitle(zip: { file: (path: string) => { async: (type: "text") => Promise<string> } | null }) {
+  const xml = await zip.file("docProps/core.xml")?.async("text");
+  if (!xml) return "";
+  return extractParagraphsFromOfficeXml(xml)[0] ?? "";
+}
+
+function getSlideNumber(path: string) {
+  return Number(path.match(/slide(\d+)\.xml$/i)?.[1] ?? 0);
+}
+
+function extractParagraphsFromOfficeXml(xml: string) {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const parserError = doc.getElementsByTagName("parsererror")[0];
+  if (parserError) return [];
+
+  const paragraphElements = Array.from(doc.getElementsByTagName("*")).filter((element) => element.localName === "p");
+  const paragraphs = paragraphElements
+    .map((paragraph) =>
+      Array.from(paragraph.getElementsByTagName("*"))
+        .filter((element) => element.localName === "t")
+        .map((element) => element.textContent ?? "")
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .filter(Boolean);
+
+  if (paragraphs.length) return dedupeAdjacentStrings(paragraphs);
+  return dedupeAdjacentStrings(
+    Array.from(doc.getElementsByTagName("*"))
+      .filter((element) => element.localName === "t")
+      .map((element) => element.textContent?.replace(/\s+/g, " ").trim() ?? "")
+      .filter(Boolean),
+  );
+}
+
+async function extractLegacyPptToMarkdown(file: File) {
+  const title = file.name.replace(/\.ppt$/i, "") || file.name;
+  const strings = extractReadableStringsFromBinary(await file.arrayBuffer());
+  const lines = [
+    `# ${title}`,
+    "",
+    `> 已从旧版 PPT 二进制文件尽力提取文字。原文件：${file.name}；文件大小：${formatFileSize(file.size)}。`,
+    "",
+  ];
+
+  if (!strings.length) {
+    lines.push("> 没有提取到可读文字。", "", `- 文件名：${file.name}`, "- 文件类型：PPT");
+    return lines.join("\n");
+  }
+
+  for (const value of strings.slice(0, 1200)) lines.push(value, "");
+  if (strings.length > 1200) lines.push(`> 仅显示前 1200 条文本片段；共提取 ${strings.length} 条。`);
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function extractReadableStringsFromBinary(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  const ascii = collectAsciiStrings(bytes);
+  const utf16 = collectUtf16LeStrings(bytes);
+  return cleanupExtractedPresentationStrings([...utf16, ...ascii]);
+}
+
+function collectAsciiStrings(bytes: Uint8Array) {
+  const strings: string[] = [];
+  let current = "";
+  for (const byte of bytes) {
+    if (byte >= 32 && byte <= 126) {
+      current += String.fromCharCode(byte);
+    } else {
+      if (current.length >= 5) strings.push(current);
+      current = "";
+    }
+  }
+  if (current.length >= 5) strings.push(current);
+  return strings;
+}
+
+function collectUtf16LeStrings(bytes: Uint8Array) {
+  const strings: string[] = [];
+  let current = "";
+  for (let index = 0; index + 1 < bytes.length; index += 2) {
+    const code = bytes[index] + bytes[index + 1] * 256;
+    if (isReadableTextCodePoint(code)) {
+      current += String.fromCharCode(code);
+    } else {
+      if (current.length >= 4) strings.push(current);
+      current = "";
+    }
+  }
+  if (current.length >= 4) strings.push(current);
+  return strings;
+}
+
+function isReadableTextCodePoint(code: number) {
+  return code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 0xd7ff);
+}
+
+function cleanupExtractedPresentationStrings(values: string[]) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const cleaned = value
+      .replace(/[\u0000-\u001f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (
+      cleaned.length < 3 ||
+      cleaned.length > 500 ||
+      seen.has(cleaned) ||
+      /^[_\-./\\\d\s]+$/.test(cleaned) ||
+      /^(Microsoft|PowerPoint|Document|SummaryInformation)$/i.test(cleaned)
+    ) {
+      continue;
+    }
+    const letters = cleaned.replace(/[^A-Za-z\u4e00-\u9fa5]/g, "").length;
+    if (letters < Math.min(3, cleaned.length)) continue;
+    seen.add(cleaned);
+    result.push(cleaned);
+  }
+  return result;
+}
+
+function dedupeAdjacentStrings(values: string[]) {
+  const result: string[] = [];
+  for (const value of values) {
+    if (result.at(-1) !== value) result.push(value);
+  }
+  return result;
+}
+
+function extractCloudShortcutUrl(value: string) {
+  const urlFile = value.match(/^\s*URL=(https?:\/\/\S+)\s*$/im);
+  if (urlFile) return cleanShortcutUrl(urlFile[1]);
+  const plistUrl = value.match(/<string>\s*(https?:\/\/[^<]+)\s*<\/string>/i);
+  if (plistUrl) return cleanShortcutUrl(plistUrl[1]);
+  const plainUrl = value.match(/https?:\/\/[^\s<>"']+/i);
+  return plainUrl ? cleanShortcutUrl(plainUrl[0]) : "";
+}
+
+function cleanShortcutUrl(value: string) {
+  return value.trim().replace(/[),.;]+$/g, "");
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function getFallbackMimeType(fileName: string) {
+  if (/\.pdf$/i.test(fileName)) return "application/pdf";
+  if (/\.pptx$/i.test(fileName)) {
+    return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  }
+  if (/\.ppt$/i.test(fileName)) return "application/vnd.ms-powerpoint";
+  return "application/octet-stream";
+}
+
+function resolveAssetSrc(src: string, assetMap: Map<string, string>, relativePath: string, baseUrl = "") {
   const trimmed = src.trim();
   if (/^(data:|https?:|blob:)/i.test(trimmed)) return trimmed;
+  if (baseUrl) {
+    try {
+      return new URL(trimmed, baseUrl).href;
+    } catch {
+      return trimmed;
+    }
+  }
   const clean = normalizeAssetPath(trimmed.replace(/[?#].*$/, ""));
   const baseDir = normalizeAssetPath(relativePath).split("/").slice(0, -1).join("/");
   const candidates = [
@@ -2273,6 +2932,17 @@ function resolveAssetSrc(src: string, assetMap: Map<string, string>, relativePat
     normalizeAssetPath(clean.split("/").pop() ?? clean),
   ];
   return candidates.map((key) => assetMap.get(key)).find(Boolean) ?? trimmed;
+}
+
+function resolveLinkHref(href: string, baseUrl = "") {
+  const trimmed = href.trim();
+  if (!trimmed || /^(javascript:|data:)/i.test(trimmed)) return "";
+  if (/^(https?:|mailto:|tel:|#)/i.test(trimmed) || !baseUrl) return trimmed;
+  try {
+    return new URL(trimmed, baseUrl).href;
+  } catch {
+    return trimmed;
+  }
 }
 
 function normalizeAssetPath(value: string) {
@@ -2288,6 +2958,75 @@ function normalizeAssetPath(value: string) {
 
 function escapeMarkdownAlt(value: string) {
   return value.replace(/[\[\]]/g, "");
+}
+
+function normalizeUserUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  return new URL(withProtocol).href;
+}
+
+function readableUrlName(value: string) {
+  try {
+    const url = new URL(value);
+    return `${url.hostname}${url.pathname === "/" ? "" : url.pathname}`.replace(/\/+$/, "") || value;
+  } catch {
+    return value;
+  }
+}
+
+function addBaseHrefToHtml(html: string, baseUrl: string) {
+  try {
+    const documentValue = new DOMParser().parseFromString(html, "text/html");
+    if (!documentValue.head) return html;
+    let base = documentValue.querySelector("base");
+    if (!base) {
+      base = documentValue.createElement("base");
+      documentValue.head.prepend(base);
+    }
+    base.setAttribute("href", baseUrl);
+    return `<!doctype html>\n${documentValue.documentElement.outerHTML}`;
+  } catch {
+    return html;
+  }
+}
+
+function markdownToHtmlDocument(markdown: string, title: string, sourceUrl?: string) {
+  const safeTitle = escapeHtml(title || "Margin Note Reader");
+  const sourceLine = sourceUrl
+    ? `<p><a href="${escapeHtml(sourceUrl)}">${escapeHtml(sourceUrl)}</a></p>`
+    : "";
+  return [
+    "<!doctype html>",
+    '<html lang="zh-CN">',
+    "<head>",
+    '<meta charset="utf-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    `<title>${safeTitle}</title>`,
+    "<style>",
+    "body{max-width:860px;margin:48px auto;padding:0 24px;font:18px/1.75 Georgia,'Noto Serif SC',serif;color:#2d2620;background:#fffdf7}",
+    "pre,code{font-family:'SF Mono',Consolas,monospace;background:#f3ecdb}",
+    "pre{overflow:auto;padding:16px;border:1px solid #d6cdb8}",
+    "blockquote{margin-left:0;padding-left:18px;border-left:4px solid #b54a14;color:#51483e}",
+    "img{max-width:100%;height:auto}",
+    "a{color:#b54a14}",
+    "</style>",
+    "</head>",
+    "<body>",
+    sourceLine,
+    `<pre>${escapeHtml(markdown)}</pre>`,
+    "</body>",
+    "</html>",
+  ].join("\n");
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function openLibraryDb() {
@@ -2349,7 +3088,7 @@ async function deleteLibraryDoc(docFile: string) {
 function extractTitleFromMarkdown(markdown: string, fallbackName: string) {
   const heading = markdown.match(/^#\s+(.+)$/m);
   if (heading) return stripInline(heading[1]).slice(0, 80);
-  return fallbackName.replace(/\.(md|markdown|txt|html|htm)$/i, "").slice(0, 80) || "未命名文档";
+  return fallbackName.replace(/\.(md|markdown|txt|html|htm|pdf|pptx?|url|webloc)$/i, "").slice(0, 80) || "未命名文档";
 }
 
 function normalizeListMarker(marker: string) {

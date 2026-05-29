@@ -6,13 +6,32 @@ declare const process: {
   cwd: () => string;
 };
 declare const fetch: (input: string, init?: unknown) => Promise<any>;
+declare const AbortController: {
+  new (): { signal: unknown; abort: () => void };
+};
+declare const setTimeout: (handler: () => void, timeout?: number) => unknown;
+declare const clearTimeout: (timeoutId: unknown) => void;
 declare const TextDecoder: {
   new (): { decode: (input?: any, options?: { stream?: boolean }) => string };
+};
+declare const URL: {
+  new (input: string, base?: string): {
+    href: string;
+    protocol: string;
+    hostname: string;
+    pathname: string;
+  };
 };
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com";
 const DEFAULT_OPENAI_MODEL = "gpt-5.4";
 const DEFAULT_REASONING_EFFORT = "xhigh";
+const DEFAULT_TRANSLATION_REASONING_EFFORT = "minimal";
+const MAX_FETCHED_HTML_BYTES = 8_000_000;
+const FETCH_URL_TIMEOUT_MS = 15_000;
+const MAX_TRANSLATE_MARKDOWN_CHARS = 120_000;
+const TRANSLATE_CHUNK_CHARS = 7_000;
+const TRANSLATE_MAX_CHUNKS = 18;
 
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ""), ...process.env };
@@ -32,16 +51,314 @@ export default defineConfig(({ mode }) => {
           server.middlewares.use("/api/ai", async (request, response) => {
             await handleAiRequest(request, response, env);
           });
+          server.middlewares.use("/api/fetch-url", async (request, response) => {
+            await handleFetchUrlRequest(request, response);
+          });
+          server.middlewares.use("/api/translate", async (request, response) => {
+            await handleTranslateRequest(request, response, env);
+          });
         },
         configurePreviewServer(server) {
           server.middlewares.use("/api/ai", async (request, response) => {
             await handleAiRequest(request, response, env);
+          });
+          server.middlewares.use("/api/fetch-url", async (request, response) => {
+            await handleFetchUrlRequest(request, response);
+          });
+          server.middlewares.use("/api/translate", async (request, response) => {
+            await handleTranslateRequest(request, response, env);
           });
         },
       },
     ],
   };
 });
+
+async function handleFetchUrlRequest(request: any, response: any) {
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "只支持 POST 请求。" });
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_URL_TIMEOUT_MS);
+
+  try {
+    const payload = await readJsonBody(request);
+    const targetUrl = normalizeFetchTargetUrl(String(payload.url ?? ""));
+    const upstream = await fetch(targetUrl, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        Accept: "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5",
+        "User-Agent": "MarginNoteReader/0.1 (+https://github.com/Leo9866/margin-note-reader)",
+      },
+    });
+
+    const contentLength = Number(upstream.headers?.get?.("content-length") ?? "0");
+    if (contentLength > MAX_FETCHED_HTML_BYTES) {
+      sendJson(response, 413, { error: "网页内容超过 8MB，暂不适合直接导入。" });
+      return;
+    }
+
+    const contentType = String(upstream.headers?.get?.("content-type") ?? "");
+    if (contentType && !/text\/html|application\/xhtml\+xml|text\/plain/i.test(contentType)) {
+      sendJson(response, 415, { error: `当前 URL 返回的不是 HTML/文本内容：${contentType}` });
+      return;
+    }
+
+    const html = await upstream.text();
+    if (!upstream.ok) {
+      sendJson(response, upstream.status, { error: `网页读取失败：HTTP ${upstream.status}` });
+      return;
+    }
+    if (html.length > MAX_FETCHED_HTML_BYTES) {
+      sendJson(response, 413, { error: "网页内容超过 8MB，暂不适合直接导入。" });
+      return;
+    }
+
+    sendJson(response, 200, {
+      url: targetUrl,
+      finalUrl: upstream.url || targetUrl,
+      contentType,
+      html,
+    });
+  } catch (error) {
+    sendJson(response, 400, {
+      error: getFetchUrlErrorMessage(error),
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function normalizeFetchTargetUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error("请输入 URL。");
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  const url = new URL(withProtocol);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("只支持 http 或 https URL。");
+  }
+  if (!url.hostname) throw new Error("URL 缺少域名。");
+  return url.href;
+}
+
+function getFetchUrlErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    if (error.name === "AbortError") return "网页读取超时，请稍后重试。";
+    if (error.message === "fetch failed" || error.message === "Failed to fetch") {
+      return "无法读取这个 URL。请确认地址可访问，且目标站点允许服务端抓取。";
+    }
+    if (error.message.trim()) return error.message;
+  }
+  return "URL 导入失败。";
+}
+
+async function handleTranslateRequest(request: any, response: any, env: Record<string, string | undefined>) {
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "只支持 POST 请求。" });
+    return;
+  }
+
+  const apiKey = env.OPENAI_API_KEY;
+  if (!apiKey) {
+    sendJson(response, 500, {
+      error: "缺少 OPENAI_API_KEY。请在启动开发服务时通过环境变量提供模型密钥。",
+    });
+    return;
+  }
+
+  try {
+    const payload = await readJsonBody(request);
+    const markdown = String(payload.markdown ?? "").trim();
+    const title = String(payload.title ?? "网页文档").trim() || "网页文档";
+    const sourceUrl = String(payload.sourceUrl ?? "").trim();
+    if (!markdown) {
+      sendJson(response, 400, { error: "没有可翻译的文档内容。" });
+      return;
+    }
+    if (markdown.length > MAX_TRANSLATE_MARKDOWN_CHARS) {
+      sendJson(response, 413, { error: "文档超过 120000 字符，当前自动翻译暂不适合处理这么长的网页。" });
+      return;
+    }
+
+    const chunks = chunkMarkdownForTranslation(markdown, TRANSLATE_CHUNK_CHARS);
+    if (chunks.length > TRANSLATE_MAX_CHUNKS) {
+      sendJson(response, 413, { error: "文档分段过多，当前自动翻译暂不适合处理这么长的网页。" });
+      return;
+    }
+
+    const baseUrl = normalizeBaseUrl(env.OPENAI_BASE_URL ?? DEFAULT_OPENAI_BASE_URL);
+    const model = env.OPENAI_TRANSLATION_MODEL ?? env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
+    const reasoningEffort =
+      env.OPENAI_TRANSLATION_REASONING_EFFORT ?? DEFAULT_TRANSLATION_REASONING_EFFORT;
+    const translatedChunks: string[] = [];
+    for (let index = 0; index < chunks.length; index += 1) {
+      translatedChunks.push(
+        await translateMarkdownChunk({
+          apiKey,
+          baseUrl,
+          chunk: chunks[index],
+          index,
+          model,
+          reasoningEffort,
+          sourceUrl,
+          title,
+          total: chunks.length,
+        }),
+      );
+    }
+
+    const translatedMarkdown = translatedChunks.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+    sendJson(response, 200, {
+      chunks: chunks.length,
+      markdown: translatedMarkdown,
+      title: extractMarkdownTitle(translatedMarkdown, `${title} 中文翻译`),
+    });
+  } catch (error) {
+    sendJson(response, 500, {
+      error: getUpstreamErrorMessage(error, env.OPENAI_BASE_URL ?? DEFAULT_OPENAI_BASE_URL),
+    });
+  }
+}
+
+async function translateMarkdownChunk({
+  apiKey,
+  baseUrl,
+  chunk,
+  index,
+  model,
+  reasoningEffort,
+  sourceUrl,
+  title,
+  total,
+}: {
+  apiKey: string;
+  baseUrl: string;
+  chunk: string;
+  index: number;
+  model: string;
+  reasoningEffort: string;
+  sourceUrl: string;
+  title: string;
+  total: number;
+}) {
+  const upstream = await fetch(`${baseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      instructions: buildTranslationInstructions(),
+      input: buildTranslationInput({ chunk, index, sourceUrl, title, total }),
+      reasoning: { effort: reasoningEffort },
+      store: false,
+      max_output_tokens: 10000,
+    }),
+  });
+
+  if (!upstream.ok) {
+    const result = await upstream.json().catch(() => null);
+    throw new Error(extractErrorMessage(result) || `翻译请求失败：HTTP ${upstream.status}`);
+  }
+
+  const result = await upstream.json().catch(() => null);
+  const translated = cleanTranslatedMarkdown(extractOutputText(result));
+  if (!translated) throw new Error("模型返回了空翻译。");
+  return translated;
+}
+
+function buildTranslationInstructions() {
+  return [
+    "你是专业的英文到简体中文技术文档翻译器。",
+    "请把用户提供的 Markdown 原文完整翻译成自然、准确、适合阅读笔记的简体中文。",
+    "必须保留 Markdown 结构：标题层级、列表、表格、引用、链接、图片、代码块和分隔线。",
+    "不要总结，不要省略，不要添加原文没有的解释，不要输出寒暄。",
+    "代码块、URL、图片地址、变量名、API 名称、模型名、文件名保持原样。",
+    "关键英文术语可以在中文后用括号保留英文，例如：工作流（workflows）。",
+    "只输出翻译后的 Markdown，不要用代码围栏包裹整篇结果。",
+  ].join("\n");
+}
+
+function buildTranslationInput({
+  chunk,
+  index,
+  sourceUrl,
+  title,
+  total,
+}: {
+  chunk: string;
+  index: number;
+  sourceUrl: string;
+  title: string;
+  total: number;
+}) {
+  return [
+    `文档标题：${title}`,
+    sourceUrl ? `来源 URL：${sourceUrl}` : "",
+    `当前分段：${index + 1} / ${total}`,
+    "",
+    "请翻译下面的 Markdown 分段：",
+    "",
+    chunk,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function chunkMarkdownForTranslation(markdown: string, maxChars: number) {
+  const chunks: string[] = [];
+  const current: string[] = [];
+  let currentLength = 0;
+  let inFence = false;
+
+  const flush = () => {
+    const value = current.join("\n").trim();
+    if (value) chunks.push(value);
+    current.length = 0;
+    currentLength = 0;
+  };
+
+  for (const line of markdown.replace(/\r\n/g, "\n").split("\n")) {
+    const trimmed = line.trim();
+    const isFence = /^```/.test(trimmed);
+    const isHeading = /^#{1,3}\s+/.test(trimmed);
+    const lineLength = line.length + 1;
+
+    if (
+      currentLength > 0 &&
+      !inFence &&
+      currentLength + lineLength > maxChars &&
+      (isHeading || currentLength > maxChars * 0.82)
+    ) {
+      flush();
+    }
+
+    current.push(line);
+    currentLength += lineLength;
+    if (isFence) inFence = !inFence;
+
+    if (currentLength > maxChars * 1.3 && !inFence) flush();
+  }
+
+  flush();
+  return chunks;
+}
+
+function cleanTranslatedMarkdown(value: string) {
+  const trimmed = value.trim();
+  const fenced = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
+  return (fenced ? fenced[1] : trimmed).trim();
+}
+
+function extractMarkdownTitle(markdown: string, fallback: string) {
+  const heading = markdown.match(/^#\s+(.+)$/m);
+  return (heading?.[1] || fallback).replace(/[*_`]/g, "").trim().slice(0, 80) || fallback;
+}
 
 async function handleAiRequest(request: any, response: any, env: Record<string, string | undefined>) {
   if (request.method !== "POST") {
