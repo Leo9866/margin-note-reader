@@ -249,6 +249,10 @@ export default function App() {
         return selectedBlock ? annotationBelongsToBlock(item, selectedBlock) : false;
       })
     : [];
+  const activeHeadingPath = activeBlock?.headingPath ?? [];
+  const immersiveHeading =
+    activeHeadingPath[activeHeadingPath.length - 1] || parsed.title || currentDoc?.title || "正在阅读";
+  const immersiveProgress = Math.max(0, Math.min(100, Math.round(progress)));
 
   useEffect(() => {
     let cancelled = false;
@@ -1032,6 +1036,43 @@ export default function App() {
           </button>
         </div>
       </header>
+      {currentDoc && isImmersive ? (
+        <div className="immersive-chrome" aria-label="沉浸式阅读状态">
+          <div className="immersive-chrome-copy">
+            <span>专注阅读</span>
+            <strong>{currentDoc.title}</strong>
+            <em>{immersiveHeading}</em>
+          </div>
+          <div className="immersive-chrome-actions">
+            <span className="immersive-progress-label">{immersiveProgress}%</span>
+            <button
+              type="button"
+              aria-label="缩小字号"
+              onClick={() => setFontSize((value) => Math.max(MIN_READER_FONT_SIZE, value - 1))}
+            >
+              A−
+            </button>
+            <button
+              type="button"
+              aria-label="放大字号"
+              onClick={() => setFontSize((value) => Math.min(24, value + 1))}
+            >
+              A+
+            </button>
+            <button
+              type="button"
+              aria-label="切换主题"
+              onClick={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
+            >
+              {theme === "light" ? <Moon size={15} /> : <Sun size={15} />}
+            </button>
+            <button className="immersive-leave" type="button" onClick={() => setIsImmersive(false)}>
+              <CornersIn size={15} />
+              退出
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <main
         className={currentDoc ? "workspace" : "workspace is-home"}
@@ -1375,12 +1416,6 @@ export default function App() {
         </aside>
         ) : null}
       </main>
-      {currentDoc && isImmersive ? (
-        <button className="immersive-exit" type="button" onClick={() => setIsImmersive(false)}>
-          <CornersIn size={16} />
-          退出沉浸阅读
-        </button>
-      ) : null}
     </div>
   );
 }

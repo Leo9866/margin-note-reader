@@ -132,7 +132,8 @@ input:disabled {
   border-top: 0;
   border-radius: 0 0 10px 10px;
   box-shadow: var(--shadow-soft);
-  opacity: 0.18;
+  opacity: 0;
+  pointer-events: none;
   transform: translateX(-50%) translateY(-36px);
   transition:
     opacity 220ms var(--ease),
@@ -141,8 +142,8 @@ input:disabled {
 
 .app.is-immersive .topbar:hover,
 .app.is-immersive .topbar:focus-within {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
+  opacity: 0;
+  transform: translateX(-50%) translateY(-36px);
 }
 
 .app.is-immersive .brand strong,
@@ -242,23 +243,91 @@ input:disabled {
   gap: 7px;
 }
 
-.immersive-exit {
+.immersive-chrome {
   position: fixed;
-  right: clamp(18px, 3vw, 38px);
-  bottom: clamp(18px, 4vh, 42px);
-  z-index: 6;
-  display: inline-flex;
-  min-height: 42px;
+  top: 14px;
+  left: 50%;
+  z-index: 7;
+  display: grid;
+  width: min(980px, calc(100% - 32px));
+  min-height: 48px;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
-  padding: 0 15px;
+  gap: 18px;
+  padding: 7px 8px 7px 16px;
   border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
-  border-radius: 999px;
+  border-radius: 8px;
   color: var(--text-main);
-  background: color-mix(in srgb, var(--bg-topbar) 88%, transparent);
-  box-shadow: var(--shadow-soft);
-  backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--bg-topbar) 90%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 18px 42px color-mix(in srgb, var(--text-main) 12%, transparent);
+  backdrop-filter: blur(18px);
+  transform: translateX(-50%);
+}
+
+.immersive-chrome-copy {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, auto) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+}
+
+.immersive-chrome-copy span,
+.immersive-chrome-copy em {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.immersive-chrome-copy span {
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.immersive-chrome-copy strong,
+.immersive-chrome-copy em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.immersive-chrome-copy strong {
+  color: var(--text-strong);
   font-size: 13px;
+  font-weight: 650;
+}
+
+.immersive-chrome-copy em {
+  font-style: normal;
+}
+
+.immersive-chrome-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.immersive-progress-label {
+  min-width: 42px;
+  color: var(--accent);
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.immersive-chrome-actions button {
+  display: inline-grid;
+  min-width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-main);
+  background: transparent;
+  font-size: 12px;
   font-weight: 650;
   transition:
     transform 180ms var(--ease),
@@ -266,13 +335,27 @@ input:disabled {
     background 180ms var(--ease);
 }
 
-.immersive-exit:hover {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent-bg) 42%, var(--bg-topbar));
+.immersive-chrome-actions button:hover {
+  border-color: var(--line);
+  background: var(--bg-hover);
 }
 
-.immersive-exit:active {
+.immersive-chrome-actions button:active {
   transform: translateY(1px);
+}
+
+.immersive-chrome-actions .immersive-leave {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  color: var(--accent);
+}
+
+.immersive-chrome-actions .immersive-leave:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-bg) 42%, var(--bg-topbar));
 }
 
 .topbar-search {
@@ -748,13 +831,34 @@ input:disabled {
 
 .app.is-immersive .reader-shell {
   background:
-    radial-gradient(circle at 50% -18%, color-mix(in srgb, var(--accent-bg) 64%, transparent), transparent 38%),
+    linear-gradient(90deg, color-mix(in srgb, var(--bg-page) 88%, transparent), transparent 14%, transparent 86%, color-mix(in srgb, var(--bg-page) 88%, transparent)),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-page) 82%, transparent), transparent 18%, transparent 82%, color-mix(in srgb, var(--bg-page) 82%, transparent)),
     var(--bg-page);
+}
+
+.app.is-immersive .reader-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--bg-page) 92%, transparent), transparent 18%, transparent 82%, color-mix(in srgb, var(--bg-page) 92%, transparent)),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-page) 76%, transparent), transparent 17%, transparent 84%, color-mix(in srgb, var(--bg-page) 78%, transparent));
 }
 
 .progress-track {
   height: 2px;
   background: transparent;
+}
+
+.app.is-immersive .progress-track {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 8;
+  width: 100%;
+  height: 3px;
 }
 
 .progress-track span {
@@ -772,7 +876,7 @@ input:disabled {
 
 .app.is-immersive .reader {
   height: calc(100dvh - 2px);
-  padding: clamp(72px, 9vh, 118px) clamp(28px, 9vw, 132px) clamp(96px, 12vh, 144px);
+  padding: clamp(104px, 13vh, 148px) clamp(28px, 9vw, 132px) clamp(124px, 14vh, 172px);
   scroll-padding-top: 96px;
 }
 
@@ -782,7 +886,9 @@ input:disabled {
 }
 
 .app.is-immersive .reader-inner {
-  max-width: min(86ch, 100%) !important;
+  position: relative;
+  z-index: 2;
+  max-width: min(68ch, calc(100vw - 64px)) !important;
   margin: 0 auto;
 }
 
@@ -798,9 +904,7 @@ input:disabled {
 }
 
 .app.is-immersive .doc-meta {
-  justify-content: center;
-  margin-bottom: 38px;
-  opacity: 0.72;
+  display: none;
 }
 
 .doc-meta span:first-child {
@@ -995,7 +1099,54 @@ blockquote.doc-block {
 .app.is-immersive p.doc-block,
 .app.is-immersive blockquote.doc-block,
 .app.is-immersive .doc-list {
-  line-height: 1.94;
+  line-height: 2.04;
+  text-wrap: pretty;
+}
+
+.app.is-immersive h1.doc-block {
+  margin: clamp(8px, 3vh, 34px) 0 clamp(44px, 7vh, 72px);
+  padding-bottom: clamp(24px, 4vh, 38px);
+  border-bottom: 1px solid color-mix(in srgb, var(--line-strong) 46%, transparent);
+  font-size: clamp(2.25rem, 4.2vw, 3.55rem);
+  line-height: 1.08;
+}
+
+.app.is-immersive h2.doc-block {
+  margin: clamp(78px, 12vh, 122px) 0 26px;
+  padding-top: clamp(32px, 5vh, 48px);
+  border-top: 1px solid color-mix(in srgb, var(--line-dashed) 72%, transparent);
+  font-size: clamp(1.65rem, 2vw, 2.08rem);
+}
+
+.app.is-immersive h3.doc-block {
+  margin: 40px 0 14px;
+  font-size: 1.18em;
+}
+
+.app.is-immersive p.doc-block {
+  margin: 1.1em 0;
+}
+
+.app.is-immersive .doc-list {
+  margin: 1.22em 0;
+}
+
+.app.is-immersive blockquote.doc-block {
+  margin: 1.4em 0;
+  padding: 22px 26px;
+  border-left-width: 3px;
+}
+
+.app.is-immersive .doc-block.is-selected,
+.app.is-immersive .doc-block:hover {
+  background: color-mix(in srgb, var(--accent-bg) 34%, transparent);
+  box-shadow:
+    -18px 0 0 color-mix(in srgb, var(--accent-bg) 22%, transparent),
+    18px 0 0 color-mix(in srgb, var(--accent-bg) 22%, transparent);
+}
+
+.app.is-immersive .doc-block.has-annotation::before {
+  left: -24px;
 }
 
 p.doc-block {
@@ -1775,7 +1926,28 @@ body.is-resizing-rail .rail-resizer::after {
 
   .app.is-immersive .topbar:hover,
   .app.is-immersive .topbar:focus-within {
-    transform: translateX(-50%) translateY(0);
+    transform: translateX(-50%) translateY(-72px);
+  }
+
+  .immersive-chrome {
+    top: 8px;
+    width: calc(100% - 20px);
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .immersive-chrome-copy {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+
+  .immersive-chrome-copy span {
+    display: none;
+  }
+
+  .immersive-chrome-actions {
+    justify-content: space-between;
   }
 
   .topbar-current {
@@ -1821,12 +1993,11 @@ body.is-resizing-rail .rail-resizer::after {
   .app.is-immersive .reader {
     height: auto;
     min-height: 100dvh;
-    padding: 76px 18px 88px;
+    padding: 126px 18px 96px;
   }
 
-  .immersive-exit {
-    right: 14px;
-    bottom: 14px;
+  .app.is-immersive .reader-inner {
+    max-width: 100% !important;
   }
 
   .start-inner {
