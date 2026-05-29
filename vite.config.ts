@@ -30,8 +30,9 @@ const DEFAULT_TRANSLATION_REASONING_EFFORT = "minimal";
 const MAX_FETCHED_HTML_BYTES = 8_000_000;
 const FETCH_URL_TIMEOUT_MS = 15_000;
 const MAX_TRANSLATE_MARKDOWN_CHARS = 120_000;
-const TRANSLATE_CHUNK_CHARS = 7_000;
-const TRANSLATE_MAX_CHUNKS = 18;
+const TRANSLATE_CHUNK_CHARS = 4_000;
+const TRANSLATE_MAX_CHUNKS = 36;
+const TRANSLATE_RETRY_COUNT = 2;
 
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ""), ...process.env };
@@ -245,31 +246,108 @@ async function translateMarkdownChunk({
   title: string;
   total: number;
 }) {
-  const upstream = await fetch(`${baseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      instructions: buildTranslationInstructions(),
-      input: buildTranslationInput({ chunk, index, sourceUrl, title, total }),
-      reasoning: { effort: reasoningEffort },
-      store: false,
-      max_output_tokens: 10000,
-    }),
-  });
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= TRANSLATE_RETRY_COUNT; attempt += 1) {
+    const upstream = await fetch(`${baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        instructions: buildTranslationInstructions(),
+        input: buildTranslationInput({ chunk, index, sourceUrl, title, total }),
+        reasoning: { effort: reasoningEffort },
+        store: false,
+        stream: true,
+        max_output_tokens: 6000,
+      }),
+    });
 
-  if (!upstream.ok) {
-    const result = await upstream.json().catch(() => null);
-    throw new Error(extractErrorMessage(result) || `翻译请求失败：HTTP ${upstream.status}`);
+    if (!upstream.ok) {
+      const result = await upstream.json().catch(() => null);
+      lastError = new Error(
+        extractErrorMessage(result) || `翻译第 ${index + 1}/${total} 段失败：HTTP ${upstream.status}`,
+      );
+      if (attempt < TRANSLATE_RETRY_COUNT && isRetryableStatus(upstream.status)) {
+        await sleep(800 * (attempt + 1));
+        continue;
+      }
+      throw lastError;
+    }
+
+    const translated = cleanTranslatedMarkdown(await readResponseOutputText(upstream));
+    if (translated) return translated;
+    lastError = new Error(`模型返回了空翻译：第 ${index + 1}/${total} 段。`);
+    if (attempt < TRANSLATE_RETRY_COUNT) {
+      await sleep(800 * (attempt + 1));
+      continue;
+    }
   }
 
-  const result = await upstream.json().catch(() => null);
-  const translated = cleanTranslatedMarkdown(extractOutputText(result));
-  if (!translated) throw new Error("模型返回了空翻译。");
-  return translated;
+  throw lastError ?? new Error(`翻译第 ${index + 1}/${total} 段失败。`);
+}
+
+function isRetryableStatus(status: number) {
+  return (
+    status === 408 ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(undefined), ms);
+  });
+}
+
+async function readResponseOutputText(upstream: any) {
+  const contentType = upstream.headers?.get?.("content-type") ?? "";
+  if (!contentType.includes("text/event-stream") || !upstream.body) {
+    const result = await upstream.json().catch(() => null);
+    return extractOutputText(result);
+  }
+
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let buffer = "";
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const eventText of events) {
+      const event = parseSseEvent(eventText);
+      if (!event.data || event.data === "[DONE]") continue;
+      const parsed = safeJsonParse(event.data);
+      if (!parsed) continue;
+      const error = extractErrorMessage(parsed);
+      if (error && event.event.includes("error")) throw new Error(error);
+      const delta = extractStreamDelta(event.event, parsed);
+      if (delta) chunks.push(delta);
+    }
+  }
+
+  if (buffer.trim()) {
+    const event = parseSseEvent(buffer);
+    const parsed = safeJsonParse(event.data);
+    if (parsed) {
+      const error = extractErrorMessage(parsed);
+      if (error && event.event.includes("error")) throw new Error(error);
+      const delta = extractStreamDelta(event.event, parsed);
+      if (delta) chunks.push(delta);
+    }
+  }
+
+  return chunks.join("").trim();
 }
 
 function buildTranslationInstructions() {
