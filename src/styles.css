@@ -568,6 +568,143 @@ input:disabled {
   background: color-mix(in srgb, var(--accent-bg) 42%, var(--bg-topbar));
 }
 
+.immersive-toc {
+  position: fixed;
+  top: clamp(86px, 10vh, 122px);
+  bottom: clamp(38px, 6vh, 72px);
+  left: 16px;
+  z-index: 6;
+  width: min(306px, calc(100vw - 64px));
+  pointer-events: none;
+}
+
+.immersive-toc-panel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  padding: 15px 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-topbar) 82%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 20px 48px color-mix(in srgb, var(--text-main) 12%, transparent);
+  backdrop-filter: blur(18px);
+  opacity: 0;
+  pointer-events: auto;
+  transform: translateX(calc(-100% - 18px));
+  transition:
+    opacity 220ms var(--ease),
+    transform 220ms var(--ease);
+}
+
+.immersive-toc.is-open .immersive-toc-panel {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.immersive-toc-toggle {
+  position: fixed;
+  top: clamp(86px, 10vh, 122px);
+  left: 16px;
+  z-index: 7;
+  display: inline-flex;
+  height: 38px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 8px;
+  color: var(--text-main);
+  background: color-mix(in srgb, var(--bg-topbar) 84%, transparent);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(16px);
+  font-size: 12px;
+  font-weight: 680;
+  pointer-events: auto;
+  transition:
+    left 220ms var(--ease),
+    transform 160ms var(--ease),
+    border-color 160ms var(--ease),
+    background 160ms var(--ease),
+    color 160ms var(--ease);
+}
+
+.immersive-toc.is-open .immersive-toc-toggle {
+  left: min(334px, calc(100vw - 112px));
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent-bg) 42%, var(--bg-topbar));
+}
+
+.immersive-toc-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-bg) 34%, var(--bg-topbar));
+}
+
+.immersive-toc-toggle:active {
+  transform: translateY(1px);
+}
+
+.immersive-toc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 1px 2px 12px;
+  border-bottom: 1px dashed color-mix(in srgb, var(--line-dashed) 72%, transparent);
+}
+
+.immersive-toc-head h2 {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 14px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.immersive-toc-head button {
+  display: grid;
+  width: 29px;
+  height: 29px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  transition:
+    transform 160ms var(--ease),
+    border-color 160ms var(--ease),
+    background 160ms var(--ease),
+    color 160ms var(--ease);
+}
+
+.immersive-toc-head button:hover {
+  border-color: var(--line);
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.immersive-toc .outline {
+  flex: 1;
+  max-height: none;
+  margin-top: 10px;
+  padding-right: 2px;
+}
+
+.immersive-toc .outline button {
+  padding-top: 7px;
+  padding-bottom: 7px;
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
 .topbar-search {
   display: flex;
   width: min(320px, 24vw);
@@ -2239,6 +2376,28 @@ body.is-resizing-rail .rail-resizer::after {
 
   .immersive-chrome-actions {
     justify-content: space-between;
+  }
+
+  .immersive-toc {
+    top: 126px;
+    bottom: 20px;
+    left: 10px;
+    width: calc(100vw - 20px);
+  }
+
+  .immersive-toc-toggle {
+    top: 92px;
+    left: 10px;
+    height: 34px;
+  }
+
+  .immersive-toc.is-open .immersive-toc-toggle {
+    right: 10px;
+    left: auto;
+  }
+
+  .immersive-toc-panel {
+    padding: 14px 11px 12px;
   }
 
   .topbar-current {

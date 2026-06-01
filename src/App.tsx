@@ -12,6 +12,7 @@ import {
   Key,
   LockKey,
   LockKeyOpen,
+  ListBullets,
   MagnifyingGlass,
   Moon,
   NotePencil,
@@ -221,6 +222,7 @@ export default function App() {
   const [sourceDraft, setSourceDraft] = useState("");
   const [sourceStatus, setSourceStatus] = useState("");
   const [isImmersive, setIsImmersive] = useState(false);
+  const [isImmersiveTocOpen, setIsImmersiveTocOpen] = useState(false);
   const [urlDraft, setUrlDraft] = useState("");
   const [urlBusy, setUrlBusy] = useState(false);
   const [translationBusy, setTranslationBusy] = useState(false);
@@ -1211,6 +1213,17 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      {currentDoc && isImmersive ? (
+        <ImmersiveToc
+          activeBlockId={activeBlockId}
+          open={isImmersiveTocOpen}
+          title={parsed.title || currentDoc.title}
+          toc={parsed.toc}
+          onClose={() => setIsImmersiveTocOpen(false)}
+          onJump={jumpToBlock}
+          onToggle={() => setIsImmersiveTocOpen((value) => !value)}
+        />
+      ) : null}
 
       <main
         className={currentDoc ? "workspace" : "workspace is-home"}
@@ -1905,6 +1918,55 @@ function Outline({
         </button>
       ))}
     </nav>
+  );
+}
+
+function ImmersiveToc({
+  activeBlockId,
+  onClose,
+  onJump,
+  onToggle,
+  open,
+  title,
+  toc,
+}: {
+  activeBlockId: string | null;
+  onClose: () => void;
+  onJump: (blockId: string) => void;
+  onToggle: () => void;
+  open: boolean;
+  title: string;
+  toc: TocItem[];
+}) {
+  return (
+    <aside className={open ? "immersive-toc is-open" : "immersive-toc"} aria-label="沉浸式本文目录">
+      <button
+        className="immersive-toc-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-label={open ? "隐藏本文目录" : "显示本文目录"}
+        onClick={onToggle}
+      >
+        <ListBullets size={16} />
+        <span>{open ? "收起" : "目录"}</span>
+      </button>
+      <div className="immersive-toc-panel">
+        <div className="immersive-toc-head">
+          <div>
+            <div className="section-kicker">本文目录</div>
+            <h2>{title}</h2>
+          </div>
+          <button type="button" aria-label="隐藏本文目录" onClick={onClose}>
+            <X size={15} />
+          </button>
+        </div>
+        {toc.length ? (
+          <Outline toc={toc} activeBlockId={activeBlockId} onJump={onJump} />
+        ) : (
+          <div className="empty-state">当前文档还没有可展示的标题目录。</div>
+        )}
+      </div>
+    </aside>
   );
 }
 
