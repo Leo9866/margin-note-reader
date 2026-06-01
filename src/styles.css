@@ -201,6 +201,21 @@ input:disabled {
   opacity: 0.42;
 }
 
+.ai-access-topbar {
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.ai-access-topbar.is-locked {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.ai-access-topbar.is-unlocked {
+  color: color-mix(in srgb, #3d7450 72%, var(--text-main));
+  border-color: color-mix(in srgb, #3d7450 34%, var(--line));
+  background: color-mix(in srgb, #3d7450 10%, transparent);
+}
+
 .brand {
   display: flex;
   min-width: 0;
@@ -219,6 +234,201 @@ input:disabled {
 
 .brand-separator {
   color: var(--text-faint);
+}
+
+.unlock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: color-mix(in srgb, var(--bg-page) 78%, rgba(45, 38, 32, 0.26));
+  backdrop-filter: blur(9px);
+}
+
+.unlock-dialog {
+  position: relative;
+  width: min(720px, 100%);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-bg) 88%, transparent), transparent 58%),
+    var(--bg-content);
+  box-shadow:
+    0 24px 70px rgba(45, 38, 32, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  animation: unlock-enter 220ms var(--ease);
+}
+
+.unlock-close {
+  position: absolute;
+  top: 13px;
+  right: 13px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.unlock-close:hover {
+  border-color: var(--line);
+  color: var(--text-main);
+  background: var(--bg-hover);
+}
+
+.unlock-copy {
+  padding: 30px 32px 0;
+}
+
+.unlock-copy h2 {
+  max-width: 520px;
+  margin: 6px 0 10px;
+  color: var(--text-strong);
+  font-size: 27px;
+  line-height: 1.18;
+}
+
+.unlock-copy p {
+  max-width: 600px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.72;
+}
+
+.unlock-layout {
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  gap: 24px;
+  padding: 26px 32px 32px;
+}
+
+.unlock-qr {
+  display: grid;
+  min-height: 210px;
+  place-items: center;
+  border: 1px dashed color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-elevated) 78%, var(--accent-bg));
+}
+
+.unlock-qr img {
+  display: block;
+  width: min(178px, 100%);
+  height: auto;
+  border-radius: 4px;
+}
+
+.unlock-qr-placeholder {
+  display: grid;
+  gap: 10px;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.unlock-form {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.unlock-form label {
+  display: grid;
+  gap: 4px;
+}
+
+.unlock-form label span {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.unlock-form label small {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.unlock-input-row {
+  display: flex;
+  height: 44px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+}
+
+.unlock-input-row:focus-within {
+  border-color: var(--accent);
+}
+
+.unlock-input-row input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  color: var(--text-main);
+  background: transparent;
+  font-size: 16px;
+}
+
+.unlock-submit {
+  display: inline-flex;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--bg-content);
+  background: var(--accent);
+  font-size: 14px;
+  font-weight: 720;
+  transition:
+    transform 160ms var(--ease),
+    opacity 160ms var(--ease);
+}
+
+.unlock-submit:active {
+  transform: translateY(1px);
+}
+
+.unlock-submit:disabled {
+  opacity: 0.55;
+}
+
+.unlock-help {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.unlock-help:hover {
+  text-decoration: underline;
+}
+
+@keyframes unlock-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .brand strong,
@@ -245,24 +455,24 @@ input:disabled {
 
 .immersive-chrome {
   position: fixed;
-  top: 14px;
+  top: 12px;
   left: 50%;
   z-index: 7;
   display: grid;
-  width: min(980px, calc(100% - 32px));
-  min-height: 48px;
+  width: min(900px, calc(100% - 40px));
+  min-height: 46px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 18px;
-  padding: 7px 8px 7px 16px;
-  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  gap: 14px;
+  padding: 6px 7px 6px 15px;
+  border: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
   border-radius: 8px;
   color: var(--text-main);
-  background: color-mix(in srgb, var(--bg-topbar) 90%, transparent);
+  background: color-mix(in srgb, var(--bg-topbar) 76%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    0 18px 42px color-mix(in srgb, var(--text-main) 12%, transparent);
-  backdrop-filter: blur(18px);
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 14px 34px color-mix(in srgb, var(--text-main) 9%, transparent);
+  backdrop-filter: blur(16px);
   transform: translateX(-50%);
 }
 
@@ -831,8 +1041,8 @@ input:disabled {
 
 .app.is-immersive .reader-shell {
   background:
-    linear-gradient(90deg, color-mix(in srgb, var(--bg-page) 88%, transparent), transparent 14%, transparent 86%, color-mix(in srgb, var(--bg-page) 88%, transparent)),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-page) 82%, transparent), transparent 18%, transparent 82%, color-mix(in srgb, var(--bg-page) 82%, transparent)),
+    linear-gradient(90deg, color-mix(in srgb, var(--bg-page) 82%, transparent), transparent 8%, transparent 92%, color-mix(in srgb, var(--bg-page) 82%, transparent)),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-page) 72%, transparent), transparent 14%, transparent 86%, color-mix(in srgb, var(--bg-page) 76%, transparent)),
     var(--bg-page);
 }
 
@@ -843,8 +1053,8 @@ input:disabled {
   z-index: 1;
   pointer-events: none;
   background:
-    linear-gradient(90deg, color-mix(in srgb, var(--bg-page) 92%, transparent), transparent 18%, transparent 82%, color-mix(in srgb, var(--bg-page) 92%, transparent)),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-page) 76%, transparent), transparent 17%, transparent 84%, color-mix(in srgb, var(--bg-page) 78%, transparent));
+    linear-gradient(90deg, color-mix(in srgb, var(--bg-page) 80%, transparent), transparent 10%, transparent 90%, color-mix(in srgb, var(--bg-page) 80%, transparent)),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-page) 62%, transparent), transparent 15%, transparent 87%, color-mix(in srgb, var(--bg-page) 68%, transparent));
 }
 
 .progress-track {
@@ -876,8 +1086,8 @@ input:disabled {
 
 .app.is-immersive .reader {
   height: calc(100dvh - 2px);
-  padding: clamp(104px, 13vh, 148px) clamp(28px, 9vw, 132px) clamp(124px, 14vh, 172px);
-  scroll-padding-top: 96px;
+  padding: clamp(88px, 10vh, 126px) clamp(36px, 6vw, 96px) clamp(96px, 11vh, 140px);
+  scroll-padding-top: 88px;
 }
 
 .reader-inner {
@@ -888,7 +1098,7 @@ input:disabled {
 .app.is-immersive .reader-inner {
   position: relative;
   z-index: 2;
-  max-width: min(68ch, calc(100vw - 64px)) !important;
+  max-width: min(84ch, calc(100vw - 72px)) !important;
   margin: 0 auto;
 }
 
@@ -1099,23 +1309,23 @@ blockquote.doc-block {
 .app.is-immersive p.doc-block,
 .app.is-immersive blockquote.doc-block,
 .app.is-immersive .doc-list {
-  line-height: 2.04;
+  line-height: 1.92;
   text-wrap: pretty;
 }
 
 .app.is-immersive h1.doc-block {
-  margin: clamp(8px, 3vh, 34px) 0 clamp(44px, 7vh, 72px);
-  padding-bottom: clamp(24px, 4vh, 38px);
+  margin: clamp(4px, 2.2vh, 26px) 0 clamp(34px, 5.6vh, 58px);
+  padding-bottom: clamp(20px, 3.2vh, 32px);
   border-bottom: 1px solid color-mix(in srgb, var(--line-strong) 46%, transparent);
-  font-size: clamp(2.25rem, 4.2vw, 3.55rem);
+  font-size: clamp(2.5rem, 4vw, 4.1rem);
   line-height: 1.08;
 }
 
 .app.is-immersive h2.doc-block {
-  margin: clamp(78px, 12vh, 122px) 0 26px;
-  padding-top: clamp(32px, 5vh, 48px);
+  margin: clamp(60px, 9vh, 96px) 0 22px;
+  padding-top: clamp(26px, 4vh, 40px);
   border-top: 1px solid color-mix(in srgb, var(--line-dashed) 72%, transparent);
-  font-size: clamp(1.65rem, 2vw, 2.08rem);
+  font-size: clamp(1.78rem, 2vw, 2.28rem);
 }
 
 .app.is-immersive h3.doc-block {
@@ -1124,11 +1334,11 @@ blockquote.doc-block {
 }
 
 .app.is-immersive p.doc-block {
-  margin: 1.1em 0;
+  margin: 0.96em 0;
 }
 
 .app.is-immersive .doc-list {
-  margin: 1.22em 0;
+  margin: 1.05em 0;
 }
 
 .app.is-immersive blockquote.doc-block {
@@ -1720,6 +1930,87 @@ body.is-resizing-rail .rail-resizer::after {
   line-height: 1.45;
 }
 
+.ai-access-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 6px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-bg) 74%, transparent), transparent 72%),
+    var(--bg-elevated);
+  box-shadow: var(--shadow-paper);
+}
+
+.ai-access-card.is-unlocked {
+  border-color: color-mix(in srgb, #3d7450 34%, var(--line));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, #3d7450 10%, transparent), transparent 72%),
+    var(--bg-elevated);
+}
+
+.ai-access-mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 6px;
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.ai-access-card.is-unlocked .ai-access-mark {
+  color: color-mix(in srgb, #3d7450 75%, var(--text-main));
+  border-color: color-mix(in srgb, #3d7450 32%, var(--line));
+  background: color-mix(in srgb, #3d7450 10%, transparent);
+}
+
+.ai-access-card strong,
+.ai-access-card span {
+  display: block;
+}
+
+.ai-access-card strong {
+  margin-bottom: 3px;
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.ai-access-card span {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.ai-access-card button {
+  min-width: 54px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text-main);
+  background: var(--bg-content);
+  font-size: 12px;
+  transition:
+    transform 160ms var(--ease),
+    border-color 160ms var(--ease),
+    background 160ms var(--ease),
+    color 160ms var(--ease);
+}
+
+.ai-access-card button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.ai-access-card button:active {
+  transform: translateY(1px);
+}
+
 .notes-feed {
   display: block;
   flex: 0 0 auto;
@@ -1965,6 +2256,31 @@ body.is-resizing-rail .rail-resizer::after {
     width: 100%;
   }
 
+  .unlock-overlay {
+    align-items: start;
+    overflow: auto;
+    padding: 14px;
+  }
+
+  .unlock-copy {
+    padding: 24px 20px 0;
+  }
+
+  .unlock-copy h2 {
+    padding-right: 38px;
+    font-size: 23px;
+  }
+
+  .unlock-layout {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 20px;
+  }
+
+  .unlock-qr {
+    min-height: 190px;
+  }
+
   .workspace {
     display: block;
     overflow: visible;
@@ -1993,11 +2309,17 @@ body.is-resizing-rail .rail-resizer::after {
   .app.is-immersive .reader {
     height: auto;
     min-height: 100dvh;
-    padding: 126px 18px 96px;
+    padding: 116px 20px 84px;
   }
 
   .app.is-immersive .reader-inner {
     max-width: 100% !important;
+  }
+
+  .app.is-immersive p.doc-block,
+  .app.is-immersive blockquote.doc-block,
+  .app.is-immersive .doc-list {
+    line-height: 1.84;
   }
 
   .start-inner {

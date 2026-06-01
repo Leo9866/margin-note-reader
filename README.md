@@ -51,6 +51,18 @@ OPENAI_REASONING_EFFORT=xhigh
 
 如果你使用兼容 OpenAI Responses API 的网关，可以把 `OPENAI_BASE_URL` 改成自己的服务地址。项目会自动补齐 `/v1` 路径。
 
+线上公开部署时可以开启 AI 解锁门禁，避免访客直接消耗模型额度：
+
+```bash
+AI_UNLOCK_CODES=260529,8612
+AI_UNLOCK_CHANNEL_NAME=你的公众号名称
+AI_UNLOCK_REPLY_KEYWORD=阅读
+AI_UNLOCK_QR_URL=/wechat-reader-qrcode.png
+AI_UNLOCK_HELP_URL=
+```
+
+配置 `AI_UNLOCK_CODES` 后，`/api/ai` 和 `/api/translate` 都会要求浏览器先通过 `/api/ai-access` 输入口令。二维码建议放在 `public/wechat-reader-qrcode.png`，或者把 `AI_UNLOCK_QR_URL` 指向一个可访问的图片地址。这个门禁适合公众号回复静态数字口令；如果后续要做一次性验证码或按用户限额，需要把公众号后台接成独立校验服务。
+
 启动开发服务：
 
 ```bash
@@ -119,6 +131,8 @@ PDF 会按页提取可复制文字，PPTX 会按幻灯片提取文本，旧版 `
 服务端中间件再调用 Responses API，并以 Server-Sent Events 形式把增量回答返回前端。
 
 URL 英文文档自动翻译也走同一个本地 Vite 代理和 Responses API 密钥。默认使用 `OPENAI_MODEL`，也可以通过 `OPENAI_TRANSLATION_MODEL` 单独指定翻译模型。
+
+如果配置了 `AI_UNLOCK_CODES`，AI 边栏会显示锁定入口，用户关注公众号并回复指定关键词后输入数字口令；校验通过后，当前浏览器会把解锁口令保存在 `localStorage`，用于后续 AI 问答和在线翻译请求。
 
 ## 数据存储
 

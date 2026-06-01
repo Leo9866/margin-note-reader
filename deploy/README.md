@@ -55,9 +55,18 @@ OPENAI_API_KEY=your-api-key
 OPENAI_BASE_URL=https://lucen.cc
 OPENAI_MODEL=gpt-5.4
 OPENAI_REASONING_EFFORT=xhigh
+
+# 可选：公开站点建议开启，避免访客直接消耗模型额度。
+AI_UNLOCK_CODES=your-public-account-code
+AI_UNLOCK_CHANNEL_NAME=你的公众号名称
+AI_UNLOCK_REPLY_KEYWORD=阅读
+AI_UNLOCK_QR_URL=/wechat-reader-qrcode.png
+AI_UNLOCK_HELP_URL=
 EOF
 chmod 600 .env.local
 ```
+
+如果配置了 `AI_UNLOCK_QR_URL=/wechat-reader-qrcode.png`，需要把二维码图片放到项目的 `public/wechat-reader-qrcode.png` 后再构建。
 
 ## 4. 安装、构建、启动
 

@@ -49,6 +49,9 @@ export default defineConfig(({ mode }) => {
       {
         name: "margin-note-ai-api",
         configureServer(server) {
+          server.middlewares.use("/api/ai-access", async (request, response) => {
+            await handleAiAccessRequest(request, response, env);
+          });
           server.middlewares.use("/api/ai", async (request, response) => {
             await handleAiRequest(request, response, env);
           });
@@ -60,6 +63,9 @@ export default defineConfig(({ mode }) => {
           });
         },
         configurePreviewServer(server) {
+          server.middlewares.use("/api/ai-access", async (request, response) => {
+            await handleAiAccessRequest(request, response, env);
+          });
           server.middlewares.use("/api/ai", async (request, response) => {
             await handleAiRequest(request, response, env);
           });
@@ -157,11 +163,96 @@ function getFetchUrlErrorMessage(error: unknown) {
   return "URL 导入失败。";
 }
 
+async function handleAiAccessRequest(
+  request: any,
+  response: any,
+  env: Record<string, string | undefined>,
+) {
+  if (request.method === "GET") {
+    sendJson(response, 200, getAiAccessResponseConfig(request, env));
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "只支持 GET 或 POST 请求。" });
+    return;
+  }
+
+  const codes = getAiUnlockCodes(env);
+  if (!codes.length) {
+    sendJson(response, 200, {
+      token: "local-dev",
+      config: getAiAccessResponseConfig(request, env, true),
+    });
+    return;
+  }
+
+  try {
+    const payload = await readJsonBody(request);
+    const code = String(payload.code ?? "").trim();
+    if (codes.includes(code)) {
+      sendJson(response, 200, {
+        token: code,
+        config: getAiAccessResponseConfig(request, env, true),
+      });
+      return;
+    }
+    sendJson(response, 401, { error: "口令不正确，请确认公众号返回的数字后再试。" });
+  } catch {
+    sendJson(response, 400, { error: "解锁请求格式无效。" });
+  }
+}
+
+function requireAiAccess(request: any, response: any, env: Record<string, string | undefined>) {
+  if (!getAiUnlockCodes(env).length || isAiRequestAuthorized(request, env)) return true;
+  sendJson(response, 401, {
+    error: "AI 功能已锁定。请先在页面中输入公众号返回的数字口令。",
+  });
+  return false;
+}
+
+function getAiAccessResponseConfig(
+  request: any,
+  env: Record<string, string | undefined>,
+  forceUnlocked = false,
+) {
+  const locked = getAiUnlockCodes(env).length > 0;
+  return {
+    locked,
+    unlocked: forceUnlocked || !locked || isAiRequestAuthorized(request, env),
+    channelName: env.AI_UNLOCK_CHANNEL_NAME ?? "公众号",
+    replyKeyword: env.AI_UNLOCK_REPLY_KEYWORD ?? "阅读",
+    qrImageUrl: env.AI_UNLOCK_QR_URL ?? "",
+    helpUrl: env.AI_UNLOCK_HELP_URL ?? "",
+  };
+}
+
+function isAiRequestAuthorized(request: any, env: Record<string, string | undefined>) {
+  const token = readRequestHeader(request, "x-margin-note-ai-token").trim();
+  return Boolean(token && getAiUnlockCodes(env).includes(token));
+}
+
+function getAiUnlockCodes(env: Record<string, string | undefined>) {
+  const raw = env.AI_UNLOCK_CODES ?? env.AI_UNLOCK_CODE ?? env.AI_ACCESS_CODE ?? "";
+  return raw
+    .split(/[\s,，;；]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function readRequestHeader(request: any, name: string) {
+  const value = request.headers?.[name.toLowerCase()];
+  if (Array.isArray(value)) return value.join(",");
+  return typeof value === "string" ? value : "";
+}
+
 async function handleTranslateRequest(request: any, response: any, env: Record<string, string | undefined>) {
   if (request.method !== "POST") {
     sendJson(response, 405, { error: "只支持 POST 请求。" });
     return;
   }
+
+  if (!requireAiAccess(request, response, env)) return;
 
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -443,6 +534,8 @@ async function handleAiRequest(request: any, response: any, env: Record<string, 
     sendJson(response, 405, { error: "只支持 POST 请求。" });
     return;
   }
+
+  if (!requireAiAccess(request, response, env)) return;
 
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {

@@ -1,4 +1,5 @@
 import {
+  ArrowSquareOut,
   BookmarkSimple,
   Brain,
   CaretRight,
@@ -8,11 +9,15 @@ import {
   DownloadSimple,
   Export,
   HighlighterCircle,
+  Key,
+  LockKey,
+  LockKeyOpen,
   MagnifyingGlass,
   Moon,
   NotePencil,
   PencilSimple,
   Plus,
+  QrCode,
   Sparkle,
   Sun,
   Trash,
@@ -22,6 +27,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEY = "margin-note-reader.hermes.v1";
+const AI_ACCESS_STORAGE_KEY = "margin-note-reader.ai-access.v1";
 const LIBRARY_DB_NAME = "margin-note-reader.library";
 const LIBRARY_DB_VERSION = 1;
 const LIBRARY_STORE_NAME = "documents";
@@ -29,6 +35,8 @@ const LAYOUT_VERSION = 4;
 const DEFAULT_FONT_SIZE = 20;
 const DEFAULT_MEASURE = 108;
 const MIN_READER_FONT_SIZE = 19;
+const MAX_READER_FONT_SIZE = 24;
+const IMMERSIVE_FONT_BOOST = 2;
 const DEFAULT_STUDY_WIDTH = 430;
 const MIN_STUDY_WIDTH = 340;
 const MAX_STUDY_WIDTH = 680;
@@ -63,6 +71,24 @@ type SourceType =
   | "cloud-doc"
   | "url";
 type Theme = "light" | "dark";
+
+interface AiAccessConfig {
+  locked: boolean;
+  unlocked: boolean;
+  channelName: string;
+  replyKeyword: string;
+  qrImageUrl: string;
+  helpUrl: string;
+}
+
+const DEFAULT_AI_ACCESS_CONFIG: AiAccessConfig = {
+  locked: false,
+  unlocked: true,
+  channelName: "公众号",
+  replyKeyword: "阅读",
+  qrImageUrl: "",
+  helpUrl: "",
+};
 
 const NOTE_KIND_OPTIONS: Array<{ kind: AnnotationKind; label: string }> = [
   { kind: "note", label: "笔记" },
@@ -199,6 +225,12 @@ export default function App() {
   const [urlBusy, setUrlBusy] = useState(false);
   const [translationBusy, setTranslationBusy] = useState(false);
   const [translationError, setTranslationError] = useState("");
+  const [aiAccess, setAiAccess] = useState<AiAccessConfig>(DEFAULT_AI_ACCESS_CONFIG);
+  const [aiAccessToken, setAiAccessToken] = useState(() => localStorage.getItem(AI_ACCESS_STORAGE_KEY) ?? "");
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const [unlockCode, setUnlockCode] = useState("");
+  const [unlockBusy, setUnlockBusy] = useState(false);
+  const [unlockError, setUnlockError] = useState("");
 
   const allDocs = useMemo<ReaderDoc[]>(() => [...DOCS, ...importedDocs], [importedDocs]);
   const currentDoc = currentDocFile ? allDocs.find((doc) => doc.file === currentDocFile) ?? null : null;
@@ -250,6 +282,94 @@ export default function App() {
   const immersiveHeading =
     activeHeadingPath[activeHeadingPath.length - 1] || parsed.title || currentDoc?.title || "正在阅读";
   const immersiveProgress = Math.max(0, Math.min(100, Math.round(progress)));
+  const readerFontSize = isImmersive
+    ? Math.min(MAX_READER_FONT_SIZE + IMMERSIVE_FONT_BOOST, fontSize + IMMERSIVE_FONT_BOOST)
+    : fontSize;
+  const aiFeatureLocked = aiAccess.locked && !aiAccessToken;
+
+  const openAiUnlock = useCallback(() => {
+    setUnlockError("");
+    setUnlockCode("");
+    setUnlockOpen(true);
+  }, []);
+
+  const clearAiAccessToken = useCallback(() => {
+    localStorage.removeItem(AI_ACCESS_STORAGE_KEY);
+    setAiAccessToken("");
+  }, []);
+
+  const requireAiAccess = useCallback(
+    (message = "AI 功能已锁定，请先解锁后再使用。") => {
+      if (!aiFeatureLocked) return true;
+      setAiError(message);
+      openAiUnlock();
+      return false;
+    },
+    [aiFeatureLocked, openAiUnlock],
+  );
+
+  const submitAiUnlock = useCallback(async () => {
+    const code = unlockCode.trim();
+    if (!code) {
+      setUnlockError("请输入公众号返回的数字口令。");
+      return;
+    }
+    setUnlockBusy(true);
+    setUnlockError("");
+    try {
+      const response = await fetch("/api/ai-access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        token?: string;
+        config?: Partial<AiAccessConfig>;
+      };
+      if (!response.ok || !data.token) {
+        throw new Error(data.error || `解锁失败：HTTP ${response.status}`);
+      }
+      localStorage.setItem(AI_ACCESS_STORAGE_KEY, data.token);
+      setAiAccessToken(data.token);
+      setAiAccess((current) => ({ ...current, ...data.config, unlocked: true }));
+      setUnlockCode("");
+      setUnlockOpen(false);
+      setAiError("");
+    } catch (error) {
+      setUnlockError(error instanceof Error ? error.message : "解锁失败，请稍后重试。");
+    } finally {
+      setUnlockBusy(false);
+    }
+  }, [unlockCode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAiAccess() {
+      try {
+        const response = await fetch("/api/ai-access", {
+          headers: getAiAccessHeaders(aiAccessToken),
+        });
+        const data = (await response.json().catch(() => ({}))) as Partial<AiAccessConfig>;
+        if (!response.ok) throw new Error("无法读取 AI 解锁配置。");
+        if (cancelled) return;
+        const next = { ...DEFAULT_AI_ACCESS_CONFIG, ...data };
+        setAiAccess(next);
+        if (!next.locked || !next.unlocked) {
+          if (!next.locked) clearAiAccessToken();
+          if (next.locked && aiAccessToken) clearAiAccessToken();
+        }
+      } catch {
+        if (!cancelled) setAiAccess(DEFAULT_AI_ACCESS_CONFIG);
+      }
+    }
+
+    void loadAiAccess();
+    return () => {
+      cancelled = true;
+    };
+  }, [aiAccessToken, clearAiAccessToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -457,6 +577,7 @@ export default function App() {
   const runAi = useCallback(
     async (mode: AiMode) => {
       if (!currentDoc || !currentDocFile) return;
+      if (!requireAiAccess()) return;
       if (!selection && mode !== "summarize") return;
       const prompt =
         mode === "question"
@@ -487,7 +608,7 @@ export default function App() {
       try {
         const response = await fetch("/api/ai", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...getAiAccessHeaders(aiAccessToken) },
           body: JSON.stringify({
             mode,
             prompt,
@@ -500,6 +621,10 @@ export default function App() {
         });
         if (!response.ok || !response.body) {
           const data = (await response.json().catch(() => ({}))) as { error?: string };
+          if (response.status === 401) {
+            clearAiAccessToken();
+            openAiUnlock();
+          }
           throw new Error(data.error || `AI 请求失败：HTTP ${response.status}`);
         }
         await readAiStream(response, {
@@ -543,10 +668,14 @@ export default function App() {
     [
       activeBlock,
       activeSection,
+      aiAccessToken,
+      clearAiAccessToken,
       currentDoc,
       currentDocFile,
+      openAiUnlock,
       parsed.title,
       questionDraft,
+      requireAiAccess,
       selectedAnnotations,
       selection,
     ],
@@ -645,13 +774,14 @@ export default function App() {
 
   const translateCurrentUrlDocument = useCallback(async () => {
     if (!currentDoc || !currentDocFile || !canTranslateCurrentDoc) return;
+    if (!requireAiAccess("AI 功能已锁定，请先解锁后再使用在线翻译。")) return;
     setTranslationBusy(true);
     setTranslationError("");
     setSourceStatus("正在生成中文翻译...");
     try {
       const response = await fetch("/api/translate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAiAccessHeaders(aiAccessToken) },
         body: JSON.stringify({
           title: currentDoc.title,
           markdown,
@@ -664,6 +794,10 @@ export default function App() {
         title?: string;
       };
       if (!response.ok || !data.markdown?.trim()) {
+        if (response.status === 401) {
+          clearAiAccessToken();
+          openAiUnlock();
+        }
         throw new Error(data.error || `翻译失败：HTTP ${response.status}`);
       }
 
@@ -693,7 +827,17 @@ export default function App() {
     } finally {
       setTranslationBusy(false);
     }
-  }, [canTranslateCurrentDoc, currentDoc, currentDocFile, markdown, saveDocsToLibrary]);
+  }, [
+    aiAccessToken,
+    canTranslateCurrentDoc,
+    clearAiAccessToken,
+    currentDoc,
+    currentDocFile,
+    markdown,
+    openAiUnlock,
+    requireAiAccess,
+    saveDocsToLibrary,
+  ]);
 
   const saveSourceEdit = useCallback(async () => {
     if (!currentDoc || !currentDocFile) return;
@@ -962,11 +1106,22 @@ export default function App() {
               className="topbar-text-button"
               disabled={translationBusy || isEditingSource}
               type="button"
-              title="在线翻译当前英文 URL 文档为中文"
+              title={aiFeatureLocked ? "先解锁 AI 后使用在线翻译" : "在线翻译当前英文 URL 文档为中文"}
               onClick={() => void translateCurrentUrlDocument()}
             >
               <Sparkle size={15} />
               {translationBusy ? "翻译中..." : "在线翻译"}
+            </button>
+          ) : null}
+          {aiAccess.locked ? (
+            <button
+              className={aiFeatureLocked ? "topbar-text-button ai-access-topbar is-locked" : "topbar-text-button ai-access-topbar is-unlocked"}
+              type="button"
+              title={aiFeatureLocked ? "解锁 AI 功能" : "当前浏览器已解锁 AI 功能"}
+              onClick={openAiUnlock}
+            >
+              {aiFeatureLocked ? <LockKey size={15} /> : <LockKeyOpen size={15} />}
+              {aiFeatureLocked ? "AI 锁定" : "AI 已解锁"}
             </button>
           ) : null}
           <div className="font-controls" title="字号">
@@ -976,7 +1131,7 @@ export default function App() {
             <button type="button" onClick={() => setFontSize(DEFAULT_FONT_SIZE)}>
               A
             </button>
-            <button type="button" onClick={() => setFontSize((value) => Math.min(24, value + 1))}>
+            <button type="button" onClick={() => setFontSize((value) => Math.min(MAX_READER_FONT_SIZE, value + 1))}>
               A+
             </button>
           </div>
@@ -1009,6 +1164,16 @@ export default function App() {
           </button>
         </div>
       </header>
+      <AiUnlockDialog
+        config={aiAccess}
+        error={unlockError}
+        busy={unlockBusy}
+        code={unlockCode}
+        open={unlockOpen}
+        onChangeCode={setUnlockCode}
+        onClose={() => setUnlockOpen(false)}
+        onSubmit={() => void submitAiUnlock()}
+      />
       {currentDoc && isImmersive ? (
         <div className="immersive-chrome" aria-label="沉浸式阅读状态">
           <div className="immersive-chrome-copy">
@@ -1028,7 +1193,7 @@ export default function App() {
             <button
               type="button"
               aria-label="放大字号"
-              onClick={() => setFontSize((value) => Math.min(24, value + 1))}
+              onClick={() => setFontSize((value) => Math.min(MAX_READER_FONT_SIZE, value + 1))}
             >
               A+
             </button>
@@ -1148,7 +1313,7 @@ export default function App() {
             onKeyUp={captureSelection}
             onScroll={onReaderScroll}
           >
-            <div className="reader-inner" style={{ maxWidth: `${measure}ch`, fontSize }}>
+            <div className="reader-inner" style={{ maxWidth: `${measure}ch`, fontSize: readerFontSize }}>
               {loadError ? (
                 <div className="reader-error">{loadError}</div>
               ) : isEditingSource && currentDoc ? (
@@ -1310,30 +1475,37 @@ export default function App() {
                 {translationBusy ? "翻译中..." : "在线翻译全文"}
               </button>
             ) : null}
+            {aiAccess.locked ? (
+              <AiAccessCard
+                config={aiAccess}
+                locked={aiFeatureLocked}
+                onOpen={openAiUnlock}
+              />
+            ) : null}
             <div className="ai-actions">
-              <button disabled={!selection || aiBusy} type="button" onClick={() => void runAi("explain")}>
+              <button disabled={!selection || aiBusy || aiFeatureLocked} type="button" onClick={() => void runAi("explain")}>
                 {aiBusy ? "请求中..." : "解释选区"}
               </button>
-              <button disabled={aiBusy} type="button" onClick={() => void runAi("summarize")}>
+              <button disabled={aiBusy || aiFeatureLocked} type="button" onClick={() => void runAi("summarize")}>
                 总结章节
               </button>
-              <button disabled={!selection || aiBusy} type="button" onClick={() => void runAi("term")}>
+              <button disabled={!selection || aiBusy || aiFeatureLocked} type="button" onClick={() => void runAi("term")}>
                 生成概念卡
               </button>
             </div>
             <label className="ask-row">
               <input
                 value={questionDraft}
-                disabled={aiBusy}
+                disabled={aiBusy || aiFeatureLocked}
                 onChange={(event) => setQuestionDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void runAi("question");
                 }}
-                placeholder="例如：它和普通 RAG 有什么区别？"
+                placeholder={aiFeatureLocked ? "解锁 AI 后即可围绕上下文提问" : "例如：它和普通 RAG 有什么区别？"}
               />
               <button
                 aria-label="提问"
-                disabled={aiBusy || !questionDraft.trim()}
+                disabled={aiBusy || aiFeatureLocked || !questionDraft.trim()}
                 type="button"
                 onClick={() => void runAi("question")}
               >
@@ -1341,7 +1513,11 @@ export default function App() {
               </button>
             </label>
             {aiError ? <div className="error-line">{aiError}</div> : null}
-            <div className="hint-line">已接入 Responses API；文档内容只会在你点击 AI 操作时发送。</div>
+            <div className="hint-line">
+              {aiAccess.locked
+                ? "AI 请求会先校验解锁口令；文档内容仍只会在你点击 AI 操作时发送。"
+                : "已接入 Responses API；文档内容只会在你点击 AI 操作时发送。"}
+            </div>
           </section>
 
           <section className="panel-section notes-feed">
@@ -1389,6 +1565,132 @@ export default function App() {
         </aside>
         ) : null}
       </main>
+    </div>
+  );
+}
+
+function AiAccessCard({
+  config,
+  locked,
+  onOpen,
+}: {
+  config: AiAccessConfig;
+  locked: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <div className={locked ? "ai-access-card is-locked" : "ai-access-card is-unlocked"}>
+      <div className="ai-access-mark" aria-hidden="true">
+        {locked ? <LockKey size={18} /> : <LockKeyOpen size={18} />}
+      </div>
+      <div>
+        <strong>{locked ? "AI 功能已锁定" : "AI 功能已解锁"}</strong>
+        <span>
+          {locked
+            ? `关注${config.channelName}，后台回复「${config.replyKeyword}」获取数字口令。`
+            : "当前浏览器会记住解锁状态，可以继续使用选区解释、章节总结和在线翻译。"}
+        </span>
+      </div>
+      <button type="button" onClick={onOpen}>
+        {locked ? "解锁" : "查看"}
+      </button>
+    </div>
+  );
+}
+
+function AiUnlockDialog({
+  busy,
+  code,
+  config,
+  error,
+  onChangeCode,
+  onClose,
+  onSubmit,
+  open,
+}: {
+  busy: boolean;
+  code: string;
+  config: AiAccessConfig;
+  error: string;
+  onChangeCode: (value: string) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+  open: boolean;
+}) {
+  if (!open) return null;
+
+  return (
+    <div
+      className="unlock-overlay"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="unlock-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ai-unlock-title"
+      >
+        <button className="unlock-close" type="button" aria-label="关闭解锁窗口" onClick={onClose}>
+          <X size={16} />
+        </button>
+        <div className="unlock-copy">
+          <div className="section-kicker">AI 解锁</div>
+          <h2 id="ai-unlock-title">关注公众号后输入数字口令</h2>
+          <p>
+            线上版本默认关闭 AI 能力，避免公开访问直接消耗模型额度。关注{config.channelName}，
+            后台回复「{config.replyKeyword}」，拿到数字后填入下方即可解锁当前浏览器。
+          </p>
+        </div>
+
+        <div className="unlock-layout">
+          <div className="unlock-qr" aria-label="公众号二维码">
+            {config.qrImageUrl ? (
+              <img src={config.qrImageUrl} alt={`${config.channelName} 二维码`} />
+            ) : (
+              <div className="unlock-qr-placeholder">
+                <QrCode size={56} />
+                <span>待配置二维码</span>
+              </div>
+            )}
+          </div>
+          <form
+            className="unlock-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSubmit();
+            }}
+          >
+            <label htmlFor="ai-unlock-code">
+              <span>数字口令</span>
+              <small>公众号后台回复「{config.replyKeyword}」后返回的数字</small>
+            </label>
+            <div className="unlock-input-row">
+              <Key size={18} />
+              <input
+                id="ai-unlock-code"
+                autoFocus
+                inputMode="numeric"
+                value={code}
+                placeholder="输入数字"
+                onChange={(event) => onChangeCode(event.currentTarget.value)}
+              />
+            </div>
+            {error ? <div className="error-line">{error}</div> : null}
+            <button className="unlock-submit" disabled={busy} type="submit">
+              {busy ? "校验中..." : "解锁 AI 功能"}
+            </button>
+            {config.helpUrl ? (
+              <a className="unlock-help" href={config.helpUrl} target="_blank" rel="noreferrer">
+                打开说明页面
+                <ArrowSquareOut size={14} />
+              </a>
+            ) : null}
+          </form>
+        </div>
+      </section>
     </div>
   );
 }
@@ -2050,6 +2352,10 @@ function getAiErrorMessage(error: unknown) {
   }
   if (error instanceof Error && error.message.trim()) return error.message;
   return "AI 请求失败。";
+}
+
+function getAiAccessHeaders(token: string): Record<string, string> {
+  return token ? { "X-Margin-Note-AI-Token": token } : {};
 }
 
 function findBlockById(
