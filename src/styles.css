@@ -553,8 +553,21 @@ input:disabled {
   max-width: 390px;
   margin-inline: auto;
   color: var(--text-muted);
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.site-invite-keyword {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 4px;
+  padding: 1px 6px 2px;
+  border: 1px solid color-mix(in srgb, #d29a14 48%, var(--line));
+  border-radius: 5px;
+  color: #6f4700;
+  background: #ffe082;
+  font-weight: 850;
+  line-height: 1.2;
 }
 
 .site-invite-code-row {

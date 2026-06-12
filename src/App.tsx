@@ -1898,7 +1898,11 @@ function SiteInviteGate({
           >
             <label htmlFor="site-invite-code">
               <span>4 位邀请码</span>
-              <small>关注公众号并回复「{config.replyKeyword}」后，把返回数字填在这里。</small>
+              <small>
+                关注公众号并回复
+                <strong className="site-invite-keyword">「{config.replyKeyword}」</strong>
+                后，把返回数字填在这里。
+              </small>
             </label>
             <div className="site-invite-code-row">
               <Key size={18} />
