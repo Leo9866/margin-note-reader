@@ -19,6 +19,7 @@ Margin Note Reader 是一个面向长文档学习的 AI 阅读工作台。它把
 - HTML 下载：网页 URL 和 HTML 来源会保留原始 HTML，可从阅读工作台直接下载。
 - URL 英文文档自动翻译：当 URL 导入内容被识别为全英文文档时，工具栏会显示自动翻译入口，生成一份中文翻译版文档。
 - OpenAI Responses API：通过 Vite 开发/预览服务代理调用，密钥不会暴露到前端代码里。
+- 站点邀请码门禁：公开部署时可以要求新访客扫码关注公众号并输入 4 位邀请码后再进入网站。
 
 ## 快速开始
 
@@ -51,17 +52,29 @@ OPENAI_REASONING_EFFORT=xhigh
 
 如果你使用兼容 OpenAI Responses API 的网关，可以把 `OPENAI_BASE_URL` 改成自己的服务地址。项目会自动补齐 `/v1` 路径。
 
+线上公开部署时可以开启站点访问门禁，适合先把网站开放给公众号读者或小范围用户：
+
+```bash
+SITE_INVITE_CODES=2605,0529
+SITE_INVITE_CHANNEL_NAME=你的公众号名称
+SITE_INVITE_REPLY_KEYWORD=read
+SITE_INVITE_QR_URL=/wechat-reader-qrcode.jpg
+SITE_INVITE_HELP_URL=
+```
+
+配置 `SITE_INVITE_CODES` 后，新访客首次打开网站会看到不可关闭的邀请码弹窗。用户扫描二维码，关注公众号并回复指定关键词，拿到 4 位数字后才能进入主界面。默认二维码文件是 `public/wechat-reader-qrcode.jpg`，也可以把 `SITE_INVITE_QR_URL` 指向一个可访问的图片地址。这个门禁只保存当前浏览器的本地通过状态，不会删除或同步用户资料。
+
 线上公开部署时可以开启 AI 解锁门禁，避免访客直接消耗模型额度：
 
 ```bash
 AI_UNLOCK_CODES=260529,8612
 AI_UNLOCK_CHANNEL_NAME=你的公众号名称
 AI_UNLOCK_REPLY_KEYWORD=阅读
-AI_UNLOCK_QR_URL=/wechat-reader-qrcode.png
+AI_UNLOCK_QR_URL=/wechat-reader-qrcode.jpg
 AI_UNLOCK_HELP_URL=
 ```
 
-配置 `AI_UNLOCK_CODES` 后，`/api/ai` 和 `/api/translate` 都会要求浏览器先通过 `/api/ai-access` 输入口令。二维码建议放在 `public/wechat-reader-qrcode.png`，或者把 `AI_UNLOCK_QR_URL` 指向一个可访问的图片地址。这个门禁适合公众号回复静态数字口令；如果后续要做一次性验证码或按用户限额，需要把公众号后台接成独立校验服务。
+配置 `AI_UNLOCK_CODES` 后，AI 边栏会要求浏览器先通过 `/api/ai-access` 输入口令，`/api/ai` 和 `/api/translate` 也会在服务端校验口令。AI 解锁门禁适合公众号回复静态数字口令；如果后续要做一次性验证码或按用户限额，需要把公众号后台接成独立校验服务。
 
 启动开发服务：
 
@@ -133,6 +146,8 @@ PDF 会按页提取可复制文字，PPTX 会按幻灯片提取文本，旧版 `
 URL 英文文档自动翻译也走同一个本地 Vite 代理和 Responses API 密钥。默认使用 `OPENAI_MODEL`，也可以通过 `OPENAI_TRANSLATION_MODEL` 单独指定翻译模型。
 
 如果配置了 `AI_UNLOCK_CODES`，AI 边栏会显示锁定入口，用户关注公众号并回复指定关键词后输入数字口令；校验通过后，当前浏览器会把解锁口令保存在 `localStorage`，用于后续 AI 问答和在线翻译请求。
+
+如果配置了 `SITE_INVITE_CODES`，网站首次访问会先显示访问验证弹窗。当前浏览器通过后会把邀请码 token 保存在 `localStorage`，后续 URL 导入、AI 问答和在线翻译请求也会携带站点访问 token。服务端发现 token 失效时会拒绝受保护接口，并让前端重新显示访问验证。
 
 ## 数据存储
 

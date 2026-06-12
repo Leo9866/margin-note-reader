@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEY = "margin-note-reader.hermes.v1";
 const AI_ACCESS_STORAGE_KEY = "margin-note-reader.ai-access.v1";
+const SITE_ACCESS_STORAGE_KEY = "margin-note-reader.site-access.v1";
 const LIBRARY_DB_NAME = "margin-note-reader.library";
 const LIBRARY_DB_VERSION = 1;
 const LIBRARY_STORE_NAME = "documents";
@@ -82,12 +83,30 @@ interface AiAccessConfig {
   helpUrl: string;
 }
 
+interface SiteAccessConfig {
+  locked: boolean;
+  unlocked: boolean;
+  channelName: string;
+  replyKeyword: string;
+  qrImageUrl: string;
+  helpUrl: string;
+}
+
 const DEFAULT_AI_ACCESS_CONFIG: AiAccessConfig = {
   locked: false,
   unlocked: true,
   channelName: "公众号",
   replyKeyword: "阅读",
   qrImageUrl: "",
+  helpUrl: "",
+};
+
+const DEFAULT_SITE_ACCESS_CONFIG: SiteAccessConfig = {
+  locked: false,
+  unlocked: true,
+  channelName: "公众号",
+  replyKeyword: "read",
+  qrImageUrl: "/wechat-reader-qrcode.jpg",
   helpUrl: "",
 };
 
@@ -227,6 +246,11 @@ export default function App() {
   const [urlBusy, setUrlBusy] = useState(false);
   const [translationBusy, setTranslationBusy] = useState(false);
   const [translationError, setTranslationError] = useState("");
+  const [siteAccess, setSiteAccess] = useState<SiteAccessConfig>(DEFAULT_SITE_ACCESS_CONFIG);
+  const [siteAccessToken, setSiteAccessToken] = useState(() => localStorage.getItem(SITE_ACCESS_STORAGE_KEY) ?? "");
+  const [siteInviteCode, setSiteInviteCode] = useState("");
+  const [siteInviteBusy, setSiteInviteBusy] = useState(false);
+  const [siteInviteError, setSiteInviteError] = useState("");
   const [aiAccess, setAiAccess] = useState<AiAccessConfig>(DEFAULT_AI_ACCESS_CONFIG);
   const [aiAccessToken, setAiAccessToken] = useState(() => localStorage.getItem(AI_ACCESS_STORAGE_KEY) ?? "");
   const [unlockOpen, setUnlockOpen] = useState(false);
@@ -287,7 +311,54 @@ export default function App() {
   const readerFontSize = isImmersive
     ? Math.min(MAX_READER_FONT_SIZE + IMMERSIVE_FONT_BOOST, fontSize + IMMERSIVE_FONT_BOOST)
     : fontSize;
+  const siteAccessLocked = siteAccess.locked && !siteAccess.unlocked;
+  const appClassName = [
+    "app",
+    currentDoc && isImmersive ? "is-immersive" : "",
+    siteAccessLocked ? "is-site-locked" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   const aiFeatureLocked = aiAccess.locked && !aiAccessToken;
+
+  const clearSiteAccessToken = useCallback(() => {
+    localStorage.removeItem(SITE_ACCESS_STORAGE_KEY);
+    setSiteAccessToken("");
+  }, []);
+
+  const submitSiteInvite = useCallback(async () => {
+    const code = siteInviteCode.trim();
+    if (!/^\d{4}$/.test(code)) {
+      setSiteInviteError("请输入公众号返回的 4 位数字邀请码。");
+      return;
+    }
+    setSiteInviteBusy(true);
+    setSiteInviteError("");
+    try {
+      const response = await fetch("/api/site-access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        token?: string;
+        config?: Partial<SiteAccessConfig>;
+      };
+      if (!response.ok || !data.token) {
+        throw new Error(data.error || `邀请码校验失败：HTTP ${response.status}`);
+      }
+      localStorage.setItem(SITE_ACCESS_STORAGE_KEY, data.token);
+      setSiteAccessToken(data.token);
+      setSiteAccess((current) => ({ ...current, ...data.config, unlocked: true }));
+      setSiteInviteCode("");
+      setSiteInviteError("");
+    } catch (error) {
+      setSiteInviteError(error instanceof Error ? error.message : "邀请码校验失败，请稍后重试。");
+    } finally {
+      setSiteInviteBusy(false);
+    }
+  }, [siteInviteCode]);
 
   const openAiUnlock = useCallback(() => {
     setUnlockError("");
@@ -344,6 +415,34 @@ export default function App() {
       setUnlockBusy(false);
     }
   }, [unlockCode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSiteAccess() {
+      try {
+        const response = await fetch("/api/site-access", {
+          headers: getSiteAccessHeaders(siteAccessToken),
+        });
+        const data = (await response.json().catch(() => ({}))) as Partial<SiteAccessConfig>;
+        if (!response.ok) throw new Error("无法读取网站访问配置。");
+        if (cancelled) return;
+        const next = { ...DEFAULT_SITE_ACCESS_CONFIG, ...data };
+        setSiteAccess(next);
+        if (!next.locked || !next.unlocked) {
+          if (!next.locked) clearSiteAccessToken();
+          if (next.locked && siteAccessToken) clearSiteAccessToken();
+        }
+      } catch {
+        if (!cancelled) setSiteAccess(DEFAULT_SITE_ACCESS_CONFIG);
+      }
+    }
+
+    void loadSiteAccess();
+    return () => {
+      cancelled = true;
+    };
+  }, [clearSiteAccessToken, siteAccessToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -610,7 +709,11 @@ export default function App() {
       try {
         const response = await fetch("/api/ai", {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...getAiAccessHeaders(aiAccessToken) },
+          headers: {
+            "Content-Type": "application/json",
+            ...getSiteAccessHeaders(siteAccessToken),
+            ...getAiAccessHeaders(aiAccessToken),
+          },
           body: JSON.stringify({
             mode,
             prompt,
@@ -623,6 +726,9 @@ export default function App() {
         });
         if (!response.ok || !response.body) {
           const data = (await response.json().catch(() => ({}))) as { error?: string };
+          if (response.status === 403) {
+            clearSiteAccessToken();
+          }
           if (response.status === 401) {
             clearAiAccessToken();
             openAiUnlock();
@@ -672,6 +778,7 @@ export default function App() {
       activeSection,
       aiAccessToken,
       clearAiAccessToken,
+      clearSiteAccessToken,
       currentDoc,
       currentDocFile,
       openAiUnlock,
@@ -680,6 +787,7 @@ export default function App() {
       requireAiAccess,
       selectedAnnotations,
       selection,
+      siteAccessToken,
     ],
   );
 
@@ -783,7 +891,11 @@ export default function App() {
     try {
       const response = await fetch("/api/translate", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAiAccessHeaders(aiAccessToken) },
+        headers: {
+          "Content-Type": "application/json",
+          ...getSiteAccessHeaders(siteAccessToken),
+          ...getAiAccessHeaders(aiAccessToken),
+        },
         body: JSON.stringify({
           title: currentDoc.title,
           markdown,
@@ -796,6 +908,9 @@ export default function App() {
         title?: string;
       };
       if (!response.ok || !data.markdown?.trim()) {
+        if (response.status === 403) {
+          clearSiteAccessToken();
+        }
         if (response.status === 401) {
           clearAiAccessToken();
           openAiUnlock();
@@ -833,12 +948,14 @@ export default function App() {
     aiAccessToken,
     canTranslateCurrentDoc,
     clearAiAccessToken,
+    clearSiteAccessToken,
     currentDoc,
     currentDocFile,
     markdown,
     openAiUnlock,
     requireAiAccess,
     saveDocsToLibrary,
+    siteAccessToken,
   ]);
 
   const saveSourceEdit = useCallback(async () => {
@@ -975,7 +1092,7 @@ export default function App() {
     try {
       const response = await fetch("/api/fetch-url", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getSiteAccessHeaders(siteAccessToken) },
         body: JSON.stringify({ url: requestedUrl }),
       });
       const data = (await response.json().catch(() => ({}))) as {
@@ -984,6 +1101,9 @@ export default function App() {
         html?: string;
       };
       if (!response.ok || !data.html) {
+        if (response.status === 403) {
+          clearSiteAccessToken();
+        }
         throw new Error(data.error || `网页读取失败：HTTP ${response.status}`);
       }
       const finalUrl = data.finalUrl || normalizeUserUrl(requestedUrl);
@@ -1011,7 +1131,7 @@ export default function App() {
     } finally {
       setUrlBusy(false);
     }
-  }, [saveDocsToLibrary, urlDraft]);
+  }, [clearSiteAccessToken, saveDocsToLibrary, siteAccessToken, urlDraft]);
 
   const deleteImportedDocument = useCallback(async (docFile: string) => {
     const doc = importedDocs.find((item) => item.file === docFile);
@@ -1058,7 +1178,7 @@ export default function App() {
   }, [studyWidth]);
 
   return (
-    <div className={currentDoc && isImmersive ? "app is-immersive" : "app"} data-theme={theme}>
+    <div className={appClassName} data-theme={theme}>
       <header className="topbar">
         <button className="topbar-icon" type="button" aria-label="工作区首页" onClick={() => setCurrentDocFile(null)}>
           ≡
@@ -1175,6 +1295,18 @@ export default function App() {
         onChangeCode={setUnlockCode}
         onClose={() => setUnlockOpen(false)}
         onSubmit={() => void submitAiUnlock()}
+      />
+      <SiteInviteGate
+        config={siteAccess}
+        code={siteInviteCode}
+        busy={siteInviteBusy}
+        error={siteInviteError}
+        locked={siteAccessLocked}
+        onChangeCode={(value) => {
+          setSiteInviteCode(value.replace(/\D/g, "").slice(0, 4));
+          setSiteInviteError("");
+        }}
+        onSubmit={() => void submitSiteInvite()}
       />
       {currentDoc && isImmersive ? (
         <div className="immersive-chrome" aria-label="沉浸式阅读状态">
@@ -1698,6 +1830,96 @@ function AiUnlockDialog({
             {config.helpUrl ? (
               <a className="unlock-help" href={config.helpUrl} target="_blank" rel="noreferrer">
                 打开说明页面
+                <ArrowSquareOut size={14} />
+              </a>
+            ) : null}
+          </form>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SiteInviteGate({
+  busy,
+  code,
+  config,
+  error,
+  locked,
+  onChangeCode,
+  onSubmit,
+}: {
+  busy: boolean;
+  code: string;
+  config: SiteAccessConfig;
+  error: string;
+  locked: boolean;
+  onChangeCode: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  if (!locked) return null;
+
+  return (
+    <div className="site-invite-overlay" role="presentation">
+      <section
+        className="site-invite-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="site-invite-title"
+      >
+        <div className="site-invite-copy">
+          <div className="section-kicker">访问验证</div>
+          <h2 id="site-invite-title">输入邀请码后进入阅读工作台</h2>
+          <p>
+            为了控制公开访问和模型资源消耗，首次进入需要完成一次验证。扫描
+            {config.channelName}二维码，关注后在后台回复「{config.replyKeyword}」，
+            系统会返回一个 4 位数字邀请码。
+          </p>
+        </div>
+
+        <div className="site-invite-layout">
+          <div className="site-invite-qr" aria-label={`${config.channelName}二维码`}>
+            {config.qrImageUrl ? (
+              <img src={config.qrImageUrl} alt={`${config.channelName}二维码`} />
+            ) : (
+              <div className="site-invite-qr-placeholder">
+                <QrCode size={58} />
+                <span>待配置公众号二维码</span>
+              </div>
+            )}
+          </div>
+
+          <form
+            className="site-invite-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSubmit();
+            }}
+          >
+            <label htmlFor="site-invite-code">
+              <span>4 位邀请码</span>
+              <small>关注公众号并回复「{config.replyKeyword}」后，把返回数字填在这里。</small>
+            </label>
+            <div className="site-invite-code-row">
+              <Key size={18} />
+              <input
+                id="site-invite-code"
+                autoFocus
+                inputMode="numeric"
+                maxLength={4}
+                pattern="[0-9]{4}"
+                placeholder="0000"
+                value={code}
+                onChange={(event) => onChangeCode(event.currentTarget.value)}
+              />
+            </div>
+            {error ? <div className="error-line">{error}</div> : null}
+            <button className="site-invite-submit" disabled={busy || code.length !== 4} type="submit">
+              {busy ? "校验中..." : "进入网站"}
+            </button>
+            {config.helpUrl ? (
+              <a className="site-invite-help" href={config.helpUrl} target="_blank" rel="noreferrer">
+                查看获取邀请码说明
                 <ArrowSquareOut size={14} />
               </a>
             ) : null}
@@ -2418,6 +2640,10 @@ function getAiErrorMessage(error: unknown) {
 
 function getAiAccessHeaders(token: string): Record<string, string> {
   return token ? { "X-Margin-Note-AI-Token": token } : {};
+}
+
+function getSiteAccessHeaders(token: string): Record<string, string> {
+  return token ? { "X-Margin-Note-Site-Token": token } : {};
 }
 
 function findBlockById(

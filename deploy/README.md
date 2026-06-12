@@ -56,17 +56,24 @@ OPENAI_BASE_URL=https://lucen.cc
 OPENAI_MODEL=gpt-5.4
 OPENAI_REASONING_EFFORT=xhigh
 
+# 可选：公开站点首次访问门禁。配置后用户需要先输入 4 位邀请码才能进入网站。
+SITE_INVITE_CODES=2605,0529
+SITE_INVITE_CHANNEL_NAME=你的公众号名称
+SITE_INVITE_REPLY_KEYWORD=read
+SITE_INVITE_QR_URL=/wechat-reader-qrcode.jpg
+SITE_INVITE_HELP_URL=
+
 # 可选：公开站点建议开启，避免访客直接消耗模型额度。
 AI_UNLOCK_CODES=your-public-account-code
 AI_UNLOCK_CHANNEL_NAME=你的公众号名称
 AI_UNLOCK_REPLY_KEYWORD=阅读
-AI_UNLOCK_QR_URL=/wechat-reader-qrcode.png
+AI_UNLOCK_QR_URL=/wechat-reader-qrcode.jpg
 AI_UNLOCK_HELP_URL=
 EOF
 chmod 600 .env.local
 ```
 
-如果配置了 `AI_UNLOCK_QR_URL=/wechat-reader-qrcode.png`，需要把二维码图片放到项目的 `public/wechat-reader-qrcode.png` 后再构建。
+如果使用默认二维码路径，需要把二维码图片放到项目的 `public/wechat-reader-qrcode.jpg` 后再构建。`SITE_INVITE_CODES` 控制新访客能否进入网站，`AI_UNLOCK_CODES` 控制已进入网站的用户能否使用 AI 功能。
 
 ## 4. 安装、构建、启动
 

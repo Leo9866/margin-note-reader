@@ -49,6 +49,9 @@ export default defineConfig(({ mode }) => {
       {
         name: "margin-note-ai-api",
         configureServer(server) {
+          server.middlewares.use("/api/site-access", async (request, response) => {
+            await handleSiteAccessRequest(request, response, env);
+          });
           server.middlewares.use("/api/ai-access", async (request, response) => {
             await handleAiAccessRequest(request, response, env);
           });
@@ -56,13 +59,16 @@ export default defineConfig(({ mode }) => {
             await handleAiRequest(request, response, env);
           });
           server.middlewares.use("/api/fetch-url", async (request, response) => {
-            await handleFetchUrlRequest(request, response);
+            await handleFetchUrlRequest(request, response, env);
           });
           server.middlewares.use("/api/translate", async (request, response) => {
             await handleTranslateRequest(request, response, env);
           });
         },
         configurePreviewServer(server) {
+          server.middlewares.use("/api/site-access", async (request, response) => {
+            await handleSiteAccessRequest(request, response, env);
+          });
           server.middlewares.use("/api/ai-access", async (request, response) => {
             await handleAiAccessRequest(request, response, env);
           });
@@ -70,7 +76,7 @@ export default defineConfig(({ mode }) => {
             await handleAiRequest(request, response, env);
           });
           server.middlewares.use("/api/fetch-url", async (request, response) => {
-            await handleFetchUrlRequest(request, response);
+            await handleFetchUrlRequest(request, response, env);
           });
           server.middlewares.use("/api/translate", async (request, response) => {
             await handleTranslateRequest(request, response, env);
@@ -81,11 +87,17 @@ export default defineConfig(({ mode }) => {
   };
 });
 
-async function handleFetchUrlRequest(request: any, response: any) {
+async function handleFetchUrlRequest(
+  request: any,
+  response: any,
+  env: Record<string, string | undefined>,
+) {
   if (request.method !== "POST") {
     sendJson(response, 405, { error: "只支持 POST 请求。" });
     return;
   }
+
+  if (!requireSiteAccess(request, response, env)) return;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_URL_TIMEOUT_MS);
@@ -161,6 +173,87 @@ function getFetchUrlErrorMessage(error: unknown) {
     if (error.message.trim()) return error.message;
   }
   return "URL 导入失败。";
+}
+
+async function handleSiteAccessRequest(
+  request: any,
+  response: any,
+  env: Record<string, string | undefined>,
+) {
+  if (request.method === "GET") {
+    sendJson(response, 200, getSiteAccessResponseConfig(request, env));
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "只支持 GET 或 POST 请求。" });
+    return;
+  }
+
+  const codes = getSiteInviteCodes(env);
+  if (!codes.length) {
+    sendJson(response, 200, {
+      token: "local-dev",
+      config: getSiteAccessResponseConfig(request, env, true),
+    });
+    return;
+  }
+
+  try {
+    const payload = await readJsonBody(request);
+    const code = String(payload.code ?? "").trim();
+    if (!/^\d{4}$/.test(code)) {
+      sendJson(response, 400, { error: "请输入 4 位数字邀请码。" });
+      return;
+    }
+    if (codes.includes(code)) {
+      sendJson(response, 200, {
+        token: code,
+        config: getSiteAccessResponseConfig(request, env, true),
+      });
+      return;
+    }
+    sendJson(response, 401, { error: "邀请码不正确，请确认公众号返回的 4 位数字后再试。" });
+  } catch {
+    sendJson(response, 400, { error: "邀请码请求格式无效。" });
+  }
+}
+
+function requireSiteAccess(request: any, response: any, env: Record<string, string | undefined>) {
+  if (!getSiteInviteCodes(env).length || isSiteRequestAuthorized(request, env)) return true;
+  sendJson(response, 403, {
+    error: "网站访问已锁定。请先输入公众号返回的 4 位数字邀请码。",
+  });
+  return false;
+}
+
+function getSiteAccessResponseConfig(
+  request: any,
+  env: Record<string, string | undefined>,
+  forceUnlocked = false,
+) {
+  const locked = getSiteInviteCodes(env).length > 0;
+  return {
+    locked,
+    unlocked: forceUnlocked || !locked || isSiteRequestAuthorized(request, env),
+    channelName: env.SITE_INVITE_CHANNEL_NAME ?? "公众号",
+    replyKeyword: env.SITE_INVITE_REPLY_KEYWORD ?? "read",
+    qrImageUrl: env.SITE_INVITE_QR_URL ?? "/wechat-reader-qrcode.jpg",
+    helpUrl: env.SITE_INVITE_HELP_URL ?? "",
+  };
+}
+
+function isSiteRequestAuthorized(request: any, env: Record<string, string | undefined>) {
+  const token = readRequestHeader(request, "x-margin-note-site-token").trim();
+  return Boolean(token && getSiteInviteCodes(env).includes(token));
+}
+
+function getSiteInviteCodes(env: Record<string, string | undefined>) {
+  const raw = env.SITE_INVITE_CODES ?? env.SITE_INVITE_CODE ?? "";
+  return raw
+    .split(/[\s,，;；]+/)
+    .map((item) => item.trim())
+    .filter((item) => /^\d{4}$/.test(item));
 }
 
 async function handleAiAccessRequest(
@@ -252,6 +345,7 @@ async function handleTranslateRequest(request: any, response: any, env: Record<s
     return;
   }
 
+  if (!requireSiteAccess(request, response, env)) return;
   if (!requireAiAccess(request, response, env)) return;
 
   const apiKey = env.OPENAI_API_KEY;
@@ -535,6 +629,7 @@ async function handleAiRequest(request: any, response: any, env: Record<string, 
     return;
   }
 
+  if (!requireSiteAccess(request, response, env)) return;
   if (!requireAiAccess(request, response, env)) return;
 
   const apiKey = env.OPENAI_API_KEY;
