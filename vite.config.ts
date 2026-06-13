@@ -637,14 +637,19 @@ async function handleAiRequest(request: any, response: any, env: Record<string, 
     const baseUrl = normalizeBaseUrl(env.OPENAI_BASE_URL ?? DEFAULT_OPENAI_BASE_URL);
     const model = env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
     const reasoningEffort = env.OPENAI_REASONING_EFFORT ?? DEFAULT_REASONING_EFFORT;
-    const upstream = await fetchResponsesWithStreamFallback(apiKey, baseUrl, {
+    const requestBody = {
       model,
       instructions: buildInstructions(),
       input: buildInput(payload),
       reasoning: { effort: reasoningEffort },
       store: false,
       max_output_tokens: 1800,
-    });
+    };
+    let upstream = await fetchResponsesWithStreamFallback(apiKey, baseUrl, requestBody);
+    if (!upstream.ok && isRetryableStatus(upstream.status)) {
+      await sleep(800);
+      upstream = await fetchResponsesWithStreamFallback(apiKey, baseUrl, requestBody);
+    }
 
     if (!upstream.ok) {
       const result = await upstream.json().catch(() => null);
