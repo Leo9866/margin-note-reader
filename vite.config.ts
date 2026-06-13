@@ -433,21 +433,13 @@ async function translateMarkdownChunk({
 }) {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= TRANSLATE_RETRY_COUNT; attempt += 1) {
-    const upstream = await fetch(`${baseUrl}/responses`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        instructions: buildTranslationInstructions(),
-        input: buildTranslationInput({ chunk, index, sourceUrl, title, total }),
-        reasoning: { effort: reasoningEffort },
-        store: false,
-        stream: true,
-        max_output_tokens: 6000,
-      }),
+    const upstream = await fetchResponsesWithStreamFallback(apiKey, baseUrl, {
+      model,
+      instructions: buildTranslationInstructions(),
+      input: buildTranslationInput({ chunk, index, sourceUrl, title, total }),
+      reasoning: { effort: reasoningEffort },
+      store: false,
+      max_output_tokens: 6000,
     });
 
     if (!upstream.ok) {
@@ -645,21 +637,13 @@ async function handleAiRequest(request: any, response: any, env: Record<string, 
     const baseUrl = normalizeBaseUrl(env.OPENAI_BASE_URL ?? DEFAULT_OPENAI_BASE_URL);
     const model = env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
     const reasoningEffort = env.OPENAI_REASONING_EFFORT ?? DEFAULT_REASONING_EFFORT;
-    const upstream = await fetch(`${baseUrl}/responses`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        instructions: buildInstructions(),
-        input: buildInput(payload),
-        reasoning: { effort: reasoningEffort },
-        store: false,
-        stream: true,
-        max_output_tokens: 1800,
-      }),
+    const upstream = await fetchResponsesWithStreamFallback(apiKey, baseUrl, {
+      model,
+      instructions: buildInstructions(),
+      input: buildInput(payload),
+      reasoning: { effort: reasoningEffort },
+      store: false,
+      max_output_tokens: 1800,
     });
 
     if (!upstream.ok) {
@@ -681,6 +665,33 @@ async function handleAiRequest(request: any, response: any, env: Record<string, 
 function normalizeBaseUrl(value: string) {
   const trimmed = value.replace(/\/+$/, "");
   return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+}
+
+async function fetchResponsesWithStreamFallback(
+  apiKey: string,
+  baseUrl: string,
+  body: Record<string, unknown>,
+) {
+  const streaming = await fetchOpenAiResponse(apiKey, baseUrl, { ...body, stream: true });
+  if (streaming.ok || !isRetryableStatus(streaming.status)) return streaming;
+
+  try {
+    const fallback = await fetchOpenAiResponse(apiKey, baseUrl, { ...body, stream: false });
+    return fallback;
+  } catch {
+    return streaming;
+  }
+}
+
+function fetchOpenAiResponse(apiKey: string, baseUrl: string, body: Record<string, unknown>) {
+  return fetch(`${baseUrl}/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 function buildInstructions() {
